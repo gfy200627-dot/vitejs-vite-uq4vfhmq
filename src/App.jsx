@@ -554,7 +554,8 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
             if (buf.length === 0) { drippingRef.current = false; return; }
             const msg = buf.shift();
             setLiveMessages(prev => [...prev, { ...msg, time: new Date().toLocaleTimeString() }].slice(-60));
-            const delay = 1200 + Math.random() * 1300;
+            // ⭐ 玩家触发的高优先级弹幕快速滚出（0.3~0.6s），普通后台弹幕维持自然节奏（1.2~2.5s）
+            const delay = msg?._priority ? (300 + Math.random() * 300) : (1200 + Math.random() * 1300);
             setTimeout(drip, delay);
         };
         drip();
@@ -672,7 +673,9 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
             liveContext: liveContextPayload
         });
         if (result.comments?.length) {
-            danmakuBufferRef.current.push(...result.comments);
+            // ⭐ 玩家刚说话/做动作触发的弹幕：插到缓冲队列最前面，并打上 _priority 标记，
+            // 否则会排在后台批量拉的十几条后面，要等 15-25 秒才滚出来（体感"说了话没人理"）。
+            danmakuBufferRef.current.unshift(...result.comments.map(c => ({ ...c, _priority: true })));
             startDrip();
         }
     };
@@ -1441,7 +1444,8 @@ function GameApp({ slotId, initialData, onBack }) {
             const res = await fetch(FUNCTION_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
-                body: JSON.stringify({ action: 'story', data: storyData })
+                // ⭐ 注入 userId：流式分支之前没带，后端 rate limiter 只能退回 IP 识别（同一出口IP的多人会互相挤限额）
+                body: JSON.stringify({ action: 'story', data: { ...storyData, userId: window._ehpUserId || 'guest' } })
             });
 
             if (res.headers.get('content-type')?.includes('event-stream') && res.body) {
@@ -3703,7 +3707,7 @@ function CreateCharacter({ slotId, onComplete, onBack }) {
                             fandomHeat: 65, antiCount: 30, fanEmotions: initFanEmotions(),
                             activeEvents: [], currentSchedule: generateRandomSchedule(1),
                             dmReadStatus: {}, dmHistories: {}, coupleExposure: null, socialFeeds: {},
-                            paidDmDaily: { lastChatDate: null, messages: {} },
+                            paidDmDaily: { lastChatDate: null, messages: {}, thread: [] },
                             companyFavor: 60
                         };
                         saveGameToSlot(slotId, gameData);
