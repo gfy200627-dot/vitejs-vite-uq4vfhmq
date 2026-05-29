@@ -38,6 +38,17 @@ function withTimeout(promise, ms, fallback) {
     });
 }
 
+// 统一获取当前用户 id：优先用 bootstrap 已缓存的 window._ehpUserId（不发网络请求），
+// 没有才回落到带 5 秒超时的 getSession()。手机端网络卡住时最多等 5 秒就放弃，
+// 绝不会让云端同步/读取无限挂起拖垮整个页面。
+async function getCurrentUserId() {
+    if (typeof window !== 'undefined' && window._ehpUserId) return window._ehpUserId;
+    const r = await withTimeout(supabaseClient.auth.getSession(), 5000, { data: { session: null } });
+    const uid = r?.data?.session?.user?.id || null;
+    if (uid && typeof window !== 'undefined') window._ehpUserId = uid;
+    return uid;
+}
+
 // ============================================================
 // 【抗杀续档】活动槽位指针
 // sessionStorage 在 App 被系统杀死（iOS 主屏 PWA 重启、内存回收）后会清空，
@@ -373,26 +384,27 @@ function deleteGameFromSlot(slotId) {
     // 同时尝试删除云端存档（失败不阻塞）
     (async () => {
         try {
-            const { data: { user } } = await supabaseClient.auth.getUser();
-            if (user) await supabaseClient.from('saves').delete().eq('user_id', user.id).eq('slot_id', slotId);
+            const uid = await getCurrentUserId();
+            if (uid) await supabaseClient.from('saves').delete().eq('user_id', uid).eq('slot_id', slotId);
         } catch(e) { /* ignore */ }
     })();
 }
 
 async function syncToCloud(slotId, data) {
     try {
-        const { data: { user } } = await supabaseClient.auth.getUser();
-        if (!user) return false;
-        await supabaseClient.from('saves').upsert({ user_id: user.id, slot_id: slotId, game_data: data, updated_at: new Date() });
+        const uid = await getCurrentUserId();
+        if (!uid) return false;
+        await supabaseClient.from('saves').upsert({ user_id: uid, slot_id: slotId, game_data: data, updated_at: new Date() });
         return true;
     } catch(e) { return false; }
 }
 
 async function loadFromCloud(slotId) {
     try {
-        const { data: { user } } = await supabaseClient.auth.getUser();
-        if (!user) return null;
-        const { data } = await supabaseClient.from('saves').select('game_data').eq('user_id', user.id).eq('slot_id', slotId).maybeSingle();
+        const uid = await getCurrentUserId();
+        if (!uid) return null;
+        const query = supabaseClient.from('saves').select('game_data').eq('user_id', uid).eq('slot_id', slotId).maybeSingle();
+        const { data } = await withTimeout(query, 6000, { data: null });
         return data?.game_data ? migrateSaveData(data.game_data) : null;
     } catch(e) { return null; }
 }
@@ -1958,7 +1970,18 @@ const sendDM = async (fan, text, actionItem) => {
         });
 
         // 2. 生成1-3条普通粉丝回复（AI生成，异步插入）
-        const commonFanNames = ["粉丝_晨晨是我老婆", "sun_cheer", "노바랑", "NOVA_粉", "晨晨的小太阳", "coco_fan07"];
+        // 普通粉丝的账号名根据当前主角（玩家昵称/艺名）动态生成，不再写死"晨晨"。
+        const fanBase = (char?.nickname || char?.artistName || "小姐姐").trim();
+        const commonFanNames = [
+            `${fanBase}是我老婆`,
+            `${fanBase}的小太阳`,
+            `守护${fanBase}`,
+            `${fanBase}贴贴`,
+            `${fanBase}_data站`,
+            `我宣布${fanBase}是我的`,
+            // 几个不含名字的通用饭圈ID，增加多样性
+            "sun_cheer", "노바랑", "coco_fan07", "今天也在追星",
+        ];
         const randomFanCount = 1 + Math.floor(Math.random() * 2); // 1-2条
         const commonFanTexts = [
             "啊啊啊看到了！冲！！😭",
@@ -3559,9 +3582,10 @@ function SlotSelector({ onSelectSlot, onCreateNew, onLogout }) {
     
     React.useEffect(() => {
         const load = async () => {
-            const { data: { user } } = await supabaseClient.auth.getUser();
-            if (!user) return;
-            const { data } = await supabaseClient.from('saves').select('slot_id, game_data').eq('user_id', user.id);
+            const uid = await getCurrentUserId();
+            if (!uid) return;
+            const query = supabaseClient.from('saves').select('slot_id, game_data').eq('user_id', uid);
+            const { data } = await withTimeout(query, 6000, { data: null });
             const processed = {};
             if (data) {
                 data.forEach(item => {
@@ -3875,26 +3899,26 @@ function CreateCharacter({ slotId, onComplete, onBack }) {
             <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #fdf2f8 0%, #fce7f3 50%, #e9d5ff 100%)", padding: "40px 20px" }}>
                 <div style={{ maxWidth: 380, margin: "0 auto", textAlign: "center" }}>
                     <h2 style={{ color: "#4a1d5a" }}>✨ 角色卡完成</h2>
-                    <div style={{ background: "rgba(30,30,42,0.7)", borderRadius: 20, padding: 20, marginBottom: 20 }}>
+                    <div style={{ background: "linear-gradient(135deg, #7c3aed 0%, #d946a8 100%)", borderRadius: 20, padding: 20, marginBottom: 20, boxShadow: "0 8px 24px rgba(124,58,237,0.25)" }}>
                         <div style={{ fontSize: 48 }}>{(charForm.artistName || charForm.name)?.[0] || "✨"}</div>
-                        <div style={{ color: "#4a1d5a", fontWeight: "bold", fontSize: 20 }}>{charForm.artistName}</div>
-                        <div style={{ color: "#9d6db8" }}>{charForm.name} · {charForm.age}岁 · {charForm.groupName}</div>
-                        <div style={{ color: "#f43f5e", marginTop: 8 }}>{charForm.role} · {charForm.status}</div>
-                        <div style={{ color: "#a855f7", fontSize: 11, marginTop: 8 }}>花名：{charForm.nickname}</div>
+                        <div style={{ color: "#ffffff", fontWeight: "bold", fontSize: 20 }}>{charForm.artistName}</div>
+                        <div style={{ color: "#fce7f3" }}>{charForm.name} · {charForm.age}岁 · {charForm.groupName}</div>
+                        <div style={{ color: "#fde047", marginTop: 8, fontWeight: "bold" }}>{charForm.role} · {charForm.status}</div>
+                        <div style={{ color: "#f5d0fe", fontSize: 11, marginTop: 8 }}>花名：{charForm.nickname}</div>
                     </div>
-                    <div style={{ background: "rgba(30,30,42,0.5)", borderRadius: 16, padding: 12, marginBottom: 20 }}>
+                    <div style={{ background: "#ffffff", border: "1px solid #f3d6ee", borderRadius: 16, padding: 12, marginBottom: 20, boxShadow: "0 4px 16px rgba(217,70,168,0.10)" }}>
                         <h3 style={{ color: "#a855f7", fontSize: 14 }}>🎪 {charForm.groupName} 成员</h3>
                         {teammates.map((tm, i) => (
                             <div key={i} style={{ display: "flex", gap: 12, padding: "6px 0", alignItems: "center" }}>
                                 <div style={{ width: 28, height: 28, borderRadius: "50%", background: "#d946a8", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "bold", color: "white" }}>{tm.name[0]}</div>
-                                <div><div style={{ color: "#4a1d5a", fontSize: 13 }}>{tm.name} ({tm.artistName})</div><div style={{ color: "#b88dc7", fontSize: 11 }}>{tm.role}</div></div>
+                                <div><div style={{ color: "#4a1d5a", fontSize: 13, fontWeight: "bold" }}>{tm.name} ({tm.artistName})</div><div style={{ color: "#9d6db8", fontSize: 11 }}>{tm.role}</div></div>
                             </div>
                         ))}
                     </div>
-                    <div style={{ background: "rgba(30,30,42,0.5)", borderRadius: 16, padding: 12, marginBottom: 20 }}>
+                    <div style={{ background: "#ffffff", border: "1px solid #f3d6ee", borderRadius: 16, padding: 12, marginBottom: 20, boxShadow: "0 4px 16px rgba(217,70,168,0.10)" }}>
                         <h3 style={{ color: "#a855f7", fontSize: 14 }}>📱 社交账号</h3>
                         {socialFields.map(sf => (
-                            <div key={sf.key} style={{ fontSize: 11, color: "#9d6db8", padding: "4px 0" }}>{sf.icon} {sf.name}: {charForm[sf.key] || "未设置"}</div>
+                            <div key={sf.key} style={{ fontSize: 11, color: "#6b4480", padding: "4px 0" }}>{sf.icon} {sf.name}: {charForm[sf.key] || "未设置"}</div>
                         ))}
                     </div>
                     <button onClick={() => {
