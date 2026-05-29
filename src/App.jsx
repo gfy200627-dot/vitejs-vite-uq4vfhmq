@@ -255,9 +255,10 @@ function sanitizeAIResult(obj, char) {
 }
 
 async function callEdgeFunction(action, data) {
-    // 30 秒超时：DeepSeek 排队/边缘函数冷启动卡住时，返回错误而不是无限等待
+    // 45 秒超时：forum/comments 现在 max_tokens 更大，生成更完整也更耗时，给足余量；
+    // DeepSeek 排队/边缘函数冷启动卡住时，超时返回错误而不是无限等待
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
+    const timer = setTimeout(() => controller.abort(), 45000);
     try {
         // 注入 userId 供后端 rate limiter 按用户识别
         const userId = window._ehpUserId || 'guest';
@@ -617,6 +618,8 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
     const [viewerCount, setViewerCount] = React.useState(Math.floor(Math.random() * 50000) + 10000);
     const [livePlatform, setLivePlatform] = React.useState("Weverse");
     const [selectedDanmaku, setSelectedDanmaku] = React.useState(null);
+    const [liveInput, setLiveInput] = React.useState(""); // ⭐ 受控输入框，支持"回复某条弹幕"模式
+    const liveInputRef = React.useRef(null);
     const [livePhase, setLivePhase] = React.useState(0); // 0:起始 1:高潮 2:尾声
     const msgEndRef = React.useRef(null);
     // 弹幕缓冲区：一次请求的弹幕不全部显示，而是每隔1.5s逐条滚出
@@ -741,13 +744,16 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
         setTimeout(() => { onClose(); setLiveMessages([]); }, 800);
     };
 
-    const readDanmaku = (msg) => {
+    // ⭐ 点击弹幕 = 选它作为"回复目标"。关键修复：不再 4 秒后自动消失，
+    // 而是一直保持选中，直到玩家发出回复或手动取消。心动值改到"真正回复时"再加。
+    const selectDanmaku = (msg) => {
         setSelectedDanmaku(msg);
-        if (msg.fanId) updateHearts({ [msg.fanId]: 3 });
-        addWorldState(`直播时读了${msg.user}的弹幕`);
+        addWorldState(`直播时翻到了${msg.user}的弹幕`);
         if (currentRisk >= 5 && (msg.text.includes("背景") || msg.text.includes("位置"))) updateRisk(1);
-        setTimeout(() => setSelectedDanmaku(null), 4000);
+        // 选中后自动聚焦输入框，方便直接打字回复
+        setTimeout(() => liveInputRef.current?.focus(), 50);
     };
+    const cancelReply = () => setSelectedDanmaku(null);
 
     const getBigFanColor = (msg) => {
         if (msg.type !== "big_fan" && !msg.fanId && !msg.color) return null;
@@ -760,26 +766,39 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
 
     // isSpeech=true 时传 playerSpeech，false 时传 playerAction
     // isSpeech=true 时传 playerSpeech，false 时传 playerAction
-    const fetchMoreDanmaku = async (action, isSpeech = false) => {
-        addWorldState(`直播中${isSpeech ? "说：" : ""}${action.slice(0, 30)}`);
+    const fetchMoreDanmaku = async (action, isSpeech = false, replyTarget = null) => {
+        addWorldState(`直播中${replyTarget ? `回复${replyTarget.user}：` : isSpeech ? "说：" : ""}${action.slice(0, 30)}`);
         // ⭐ 玩家说话时，记录到 ref，让后台批量拉的也能用上
         if (isSpeech) {
             lastPlayerSpeechRef.current = { text: action, time: Date.now() };
         }
+        // ⭐ 真正"回复了某条大粉弹幕" → 该大粉心动 +3（从原来"点一下就加"挪到这里，更合理也更难刷）
         // ✅ 防重入：如果上一次请求还没回来，跳过（不阻塞直播体验）
         if (fetchingDanmakuRef.current) return;
         fetchingDanmakuRef.current = true;
+        if (replyTarget?.fanId) updateHearts({ [replyTarget.fanId]: 3 });
         // 取最近8条弹幕做上下文
         const recentDanmaku = liveMessages.slice(-8).map(m => ({ user: m.user, text: m.text }));
         const liveContextPayload = {
-            topic: `${liveTopic}·${isSpeech ? "主播刚开口说话" : action}`,
+            topic: `${liveTopic}·${replyTarget ? "主播回复弹幕" : isSpeech ? "主播刚开口说话" : action}`,
             platform: livePlatform,
             recentDanmaku,
+            // ⭐ 回复某条弹幕时把被回复的弹幕带给后端，让被回复者狂喜、其他人羡慕起哄
+            ...(replyTarget ? {
+                replyTo: {
+                    user: replyTarget.user,
+                    text: replyTarget.text,
+                    isBigFan: replyTarget.type === "big_fan" || !!replyTarget.fanId,
+                    fanId: replyTarget.fanId || ""
+                }
+            } : {}),
             ...(isSpeech
                 ? {
                     playerSpeech: action,
                     // ⭐ 强约束：必须直接回应主播刚说的话
-                    instruction: `主播（${char?.artistName || "本人"}）刚刚开口说：「${action}」。生成的弹幕里至少有 5 条必须直接回应这句话的具体内容（接梗、反应、追问、起哄、共情等），不要写跟这句话无关的通用弹幕。`
+                    instruction: replyTarget
+                        ? `主播（${char?.artistName || "本人"}）在直播间公开回复了【${replyTarget.user}】的弹幕「${replyTarget.text}」，并对TA说：「${action}」。请让【${replyTarget.user}】本人激动回应，其余粉丝羡慕起哄。`
+                        : `主播（${char?.artistName || "本人"}）刚刚开口说：「${action}」。生成的弹幕里至少有 5 条必须直接回应这句话的具体内容（接梗、反应、追问、起哄、共情等），不要写跟这句话无关的通用弹幕。`
                 }
                 : {
                     playerAction: action,
@@ -812,6 +831,27 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
         }
     };
 
+    // ⭐ 统一的"发言/回复"入口：受控输入框 + 是否在回复某条弹幕
+    const sendLiveReply = () => {
+        const txt = liveInput.trim();
+        if (!txt) return;
+        const target = selectedDanmaku; // 若选中了某条弹幕，则这条发言是"回复它"
+        // 1) 立即把主播发言显示成右侧气泡；回复时带上被回复的弹幕（气泡里显示引用）
+        setLiveMessages(prev => [...prev, {
+            user: char?.artistName || "主播",
+            text: txt,
+            type: "host",
+            isHost: true,
+            ...(target ? { replyTo: { user: target.user, text: target.text } } : {}),
+            time: new Date().toLocaleTimeString()
+        }].slice(-60));
+        // 2) 通知后端生成响应弹幕（把回复目标一起传过去）
+        fetchMoreDanmaku(txt, true, target || null);
+        // 3) 清空输入框 + 退出回复模式
+        setLiveInput("");
+        setSelectedDanmaku(null);
+    };
+
     if (!liveStarted) {
         return (
             <div className="modal-overlay" onClick={onClose}>
@@ -826,7 +866,7 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                             onKeyDown={e => e.key === "Enter" && startLive()} style={{ marginBottom: 12 }} />
                         <div style={{ background: "rgba(225,29,72,0.08)", borderRadius: 12, padding: 10, marginBottom: 16, fontSize: 11, color: "#f87171", lineHeight: 1.6 }}>
                             ⚠️ 大粉可能从弹幕里发现恋爱痕迹（背景/物品），风险会上升。<br/>
-                            💡 点击任意弹幕可以「回应」——大粉弹幕心动+3，普通弹幕记录世界线
+                            💡 直播中点任意弹幕选中 → 在输入框打字即可「回复TA」，被回复的粉丝会激动回应、其他人羡慕起哄（回复大粉心动+3）
                         </div>
                         <button className="btn-primary" style={{ width: "100%" }} onClick={startLive}>🔴 开始直播</button>
                     </div>
@@ -853,11 +893,16 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                     </div>
                 </div>
 
-                {/* 回应提示 */}
+                {/* 回复提示条：选中弹幕后常驻，直到发出回复或点 × 取消 */}
                 {selectedDanmaku && (
-                    <div style={{ background: "rgba(217,70,168,0.12)", border: "1px solid #d946a8", padding: "8px 16px", textAlign: "center", flexShrink: 0 }}>
-                        <div style={{ fontSize: 10, color: "#9d6db8" }}>你正在回应弹幕 · {selectedDanmaku.type === "big_fan" ? "💌 大粉心动+3" : "记录世界线"}</div>
-                        <div style={{ color: "#4a1d5a", fontSize: 12, marginTop: 2, fontWeight: 500 }}>「{selectedDanmaku.text}」— {selectedDanmaku.user}</div>
+                    <div style={{ background: "rgba(217,70,168,0.12)", border: "1px solid #d946a8", padding: "8px 16px", flexShrink: 0, display: "flex", alignItems: "center", gap: 10 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 10, color: "#9d6db8" }}>
+                                ✍️ 正在回复 {selectedDanmaku.type === "big_fan" || selectedDanmaku.fanId ? "💌 大粉（回复后心动+3）" : "这条弹幕"} · 在下方输入框打字回复
+                            </div>
+                            <div style={{ color: "#4a1d5a", fontSize: 12, marginTop: 2, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>「{selectedDanmaku.text}」— {selectedDanmaku.user}</div>
+                        </div>
+                        <button onClick={cancelReply} style={{ flexShrink: 0, background: "rgba(217,70,168,0.18)", color: "#9d2b73", border: "none", borderRadius: 14, width: 26, height: 26, fontSize: 15, lineHeight: "26px", cursor: "pointer", padding: 0 }} aria-label="取消回复">×</button>
                     </div>
                 )}
 
@@ -872,15 +917,21 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                             // 主播自己说的话：右对齐粉紫渐变气泡，不可被点击回应
                             return (
                                 <div key={i} style={{ padding: "5px 0", display: "flex", justifyContent: "flex-end" }}>
-                                    <div style={{ maxWidth: "70%", background: "linear-gradient(135deg,#ec4899,#a855f7)", borderRadius: "16px 4px 16px 16px", padding: "6px 12px" }}>
+                                    <div style={{ maxWidth: "75%", background: "linear-gradient(135deg,#ec4899,#a855f7)", borderRadius: "16px 4px 16px 16px", padding: "6px 12px" }}>
                                         <div style={{ fontSize: 9, color: "rgba(255,255,255,0.7)", marginBottom: 2 }}>🎙️ {msg.user} · 主播</div>
+                                        {msg.replyTo && (
+                                            <div style={{ background: "rgba(255,255,255,0.18)", borderLeft: "2px solid rgba(255,255,255,0.7)", borderRadius: 6, padding: "3px 7px", marginBottom: 4 }}>
+                                                <span style={{ fontSize: 9, color: "rgba(255,255,255,0.95)", fontWeight: 600 }}>↪ 回复 {msg.replyTo.user}：</span>
+                                                <span style={{ fontSize: 9, color: "rgba(255,255,255,0.8)" }}> {String(msg.replyTo.text).slice(0, 24)}{String(msg.replyTo.text).length > 24 ? "…" : ""}</span>
+                                            </div>
+                                        )}
                                         <div style={{ color: "white", fontSize: 12, lineHeight: 1.5 }}>{msg.text}</div>
                                     </div>
                                 </div>
                             );
                         }
                         return (
-                            <div key={i} onClick={() => readDanmaku(msg)} style={{ padding: "4px 0", borderBottom: "1px solid rgba(255,255,255,0.03)", cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 6 }}>
+                            <div key={i} onClick={() => selectDanmaku(msg)} style={{ padding: "4px 0", borderBottom: "1px solid rgba(255,255,255,0.03)", cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 6, background: selectedDanmaku && selectedDanmaku.text === msg.text && selectedDanmaku.user === msg.user ? "rgba(217,70,168,0.12)" : "transparent", borderRadius: 8 }}>
                                 {isBigFan && <span style={{ fontSize: 13, flexShrink: 0 }}>{fanObj?.emoji || "💌"}</span>}
                                 <div>
                                     <span style={{ fontWeight: "bold", fontSize: 11, color: isBigFan ? bigFanColor : (msg.type === "blackfan" ? "#f87171" : "#b88dc7") }}>
@@ -899,49 +950,25 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                     {liveMessages.length === 0 && <div style={{ color: "#9d6db8", textAlign: "center", padding: 20, fontSize: 12 }}>弹幕加载中...</div>}
                 </div>
 
-                {/* 快捷操作 + 回应输入框 */}
+                {/* 快捷操作 + 发言/回复输入框 */}
                 <div style={{ padding: "10px 16px", background: "#ffffff", borderTop: "1px solid rgba(217,70,168,0.1)", flexShrink: 0 }}>
-                    <div style={{ fontSize: 10, color: "#b88dc7", marginBottom: 8 }}>点按钮触发互动 · 输入框说话会实时显示并触发弹幕回应</div>
+                    <div style={{ fontSize: 10, color: "#b88dc7", marginBottom: 8 }}>
+                        {selectedDanmaku ? "💞 点击弹幕选中后，在这里打字就是「回复TA」——被回复的粉丝会激动回应" : "点弹幕可回复 TA · 点按钮触发互动 · 输入框说话会实时触发弹幕回应"}
+                    </div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
                         {["😊 聊日常", "🎤 唱一首", "💃 跳一段", "👀 偷看私信", "😴 要去睡了"].map(a => (
                             <button key={a} className="btn-secondary" style={{ fontSize: 10, padding: "4px 8px" }} onClick={() => fetchMoreDanmaku(a, false)}>{a}</button>
                         ))}
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
-                        <input id="liveReplyInput" placeholder="对粉丝说点什么..." 
-                            style={{ flex: 1, background: "#ffffff", border: "1px solid #f3d5ed", borderRadius: 20, padding: "8px 14px", color: "#4a1d5a", fontSize: 13 }}
-                            onKeyDown={e => {
-                                if (e.key === "Enter" && e.target.value.trim()) {
-                                    const txt = e.target.value.trim();
-                                    // 1. 立即显示主播自己的发言（左上角样式，带isHost标记）
-                                    setLiveMessages(prev => [...prev, {
-                                        user: char?.artistName || "主播",
-                                        text: txt,
-                                        type: "host",
-                                        isHost: true,
-                                        time: new Date().toLocaleTimeString()
-                                    }].slice(-60));
-                                    // 2. 通知后端生成响应弹幕
-                                    fetchMoreDanmaku(txt, true);
-                                    e.target.value = "";
-                                }
-                            }} />
-                        <button className="btn-primary" style={{ padding: "8px 16px", fontSize: 12 }} 
-                            onClick={() => {
-                                const el = document.getElementById("liveReplyInput");
-                                if (el?.value?.trim()) {
-                                    const txt = el.value.trim();
-                                    setLiveMessages(prev => [...prev, {
-                                        user: char?.artistName || "主播",
-                                        text: txt,
-                                        type: "host",
-                                        isHost: true,
-                                        time: new Date().toLocaleTimeString()
-                                    }].slice(-60));
-                                    fetchMoreDanmaku(txt, true);
-                                    el.value = "";
-                                }
-                            }}>说</button>
+                        <input ref={liveInputRef} value={liveInput}
+                            placeholder={selectedDanmaku ? `回复 @${selectedDanmaku.user}...` : "对粉丝说点什么..."}
+                            style={{ flex: 1, background: "#ffffff", border: selectedDanmaku ? "1px solid #d946a8" : "1px solid #f3d5ed", borderRadius: 20, padding: "8px 14px", color: "#4a1d5a", fontSize: 13 }}
+                            onChange={e => setLiveInput(e.target.value)}
+                            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); sendLiveReply(); } }} />
+                        <button className="btn-primary" style={{ padding: "8px 16px", fontSize: 12 }} onClick={sendLiveReply}>
+                            {selectedDanmaku ? "回复" : "说"}
+                        </button>
                     </div>
                 </div>
             </div>
