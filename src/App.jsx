@@ -642,6 +642,9 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
         return fan?.color || msg.color || null;
     };
 
+    // ✅ 防重入 ref：玩家连续快速发言时只保留最新一次请求
+    const fetchingDanmakuRef = React.useRef(false);
+
     // isSpeech=true 时传 playerSpeech，false 时传 playerAction
     // isSpeech=true 时传 playerSpeech，false 时传 playerAction
     const fetchMoreDanmaku = async (action, isSpeech = false) => {
@@ -650,6 +653,9 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
         if (isSpeech) {
             lastPlayerSpeechRef.current = { text: action, time: Date.now() };
         }
+        // ✅ 防重入：如果上一次请求还没回来，跳过（不阻塞直播体验）
+        if (fetchingDanmakuRef.current) return;
+        fetchingDanmakuRef.current = true;
         // 取最近8条弹幕做上下文
         const recentDanmaku = liveMessages.slice(-8).map(m => ({ user: m.user, text: m.text }));
         const liveContextPayload = {
@@ -668,15 +674,28 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                 }
             )
         };
-        const result = await callEdgeFunction('live', {
-            gameContext: { seaLevel, riskLevel: currentRisk, fandomHeat, antiCount, artistName: char?.artistName, nickname: char?.nickname },
-            liveContext: liveContextPayload
-        });
-        if (result.comments?.length) {
-            // ⭐ 玩家刚说话/做动作触发的弹幕：插到缓冲队列最前面，并打上 _priority 标记，
-            // 否则会排在后台批量拉的十几条后面，要等 15-25 秒才滚出来（体感"说了话没人理"）。
-            danmakuBufferRef.current.unshift(...result.comments.map(c => ({ ...c, _priority: true })));
+        try {
+            const result = await callEdgeFunction('live', {
+                gameContext: { seaLevel, riskLevel: currentRisk, fandomHeat, antiCount, artistName: char?.artistName, nickname: char?.nickname },
+                liveContext: liveContextPayload
+            });
+            if (result.comments?.length) {
+                // ⭐ 玩家刚说话/做动作触发的弹幕：插到缓冲队列最前面，并打上 _priority 标记，
+                // 否则会排在后台批量拉的十几条后面，要等 15-25 秒才滚出来（体感"说了话没人理"）。
+                danmakuBufferRef.current.unshift(...result.comments.map(c => ({ ...c, _priority: true })));
+                startDrip();
+            } else {
+                // ✅ API 返回但评论为空时：给一条占位弹幕，避免"说了话没人理"
+                danmakuBufferRef.current.unshift({ user: "💬", text: "（弹幕涌入中...）", type: "fan", _priority: true });
+                startDrip();
+            }
+        } catch(e) {
+            console.error('[fetchMoreDanmaku] 失败:', e);
+            // ✅ 网络失败时给一条友好提示弹幕，而不是静默卡住
+            danmakuBufferRef.current.unshift({ user: "💬", text: "（弹幕加载中，稍等一下~）", type: "fan", _priority: true });
             startDrip();
+        } finally {
+            fetchingDanmakuRef.current = false;
         }
     };
 
@@ -1050,6 +1069,7 @@ function GameApp({ slotId, initialData, onBack }) {
     const [showRelationGraph, setShowRelationGraph] = React.useState(false);
     const [worldState, setWorldState] = React.useState([]);
     const [loading, setLoading] = React.useState(false);
+    const [forumLoading, setForumLoading] = React.useState(false); // 论坛/帖子详情独立加载态，不影响主线
     const [dynamicLoading, setDynamicLoading] = React.useState(false); // 舆论涟漪加载状态
     const [streamingStory, setStreamingStory] = React.useState("");
     const [error, setError] = React.useState(null);
@@ -1162,7 +1182,8 @@ function GameApp({ slotId, initialData, onBack }) {
     };
     const openComments = async (feedKey, post) => {
         setCommentSheet({ feedKey, postId: post.id });
-        if (post.comments) return; // 已加载
+        // ✅ 修复：空数组([])也要重新请求，之前 post.comments=[] 时被误判为"已加载"跳过
+        if (post.comments && post.comments.length > 0) return;
         setCommentLoading(true);
         const platformId = feedKey.startsWith("cpost") ? cpostTab : (feedKey.startsWith("jiefu") ? "weibo" : feedKey);
         const unlockedNames = unlocked.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean);
@@ -1183,6 +1204,14 @@ function GameApp({ slotId, initialData, onBack }) {
                 forbidDatingGossip: unlocked.length === 0         // ⭐ 显式禁止编恋爱话题
             }
         });
+        if (result?.error) {
+            // ✅ 修复：API 失败时给用户可见反馈，而不是静默显示"还没有评论"
+            updatePost(feedKey, post.id, { comments: null }); // 重置为 null 以便下次可重试
+            setCommentLoading(false);
+            setToastMsg(`💬 评论加载失败，请稍后重试`);
+            setTimeout(() => setToastMsg(""), 3000);
+            return;
+        }
         updatePost(feedKey, post.id, { comments: result.comments || [], commentsCount: (result.comments || []).length || post.commentsCount });
         setCommentLoading(false);
     };
@@ -1719,7 +1748,7 @@ const sendDM = async (fan, text, actionItem) => {
         }));
         
         const result = await callEdgeFunction('dm', {
-            fan: { name: fan.name, handle: fan.handle, type: fan.type, personality: fan.personality, age: fan.age || 22 },
+            fan: { name: fan.name, handle: fan.handle, type: fan.type, personality: fan.personality, age: fan.age || 22, famousEvent: fan.famousEvent },
             charAge: Number(char?.age) || 20, // 【传入年龄判定】
             userMessage: isJealous ? `[吃醋模式] ${processedMessage}` : processedMessage,
             history: currentHistory,
@@ -1833,7 +1862,7 @@ const sendDM = async (fan, text, actionItem) => {
             
             try {
                 const result = await callEdgeFunction('paid_dm', {
-                    fan: { name: fan.name, handle: fan.handle, type: fan.type, personality: fan.personality, age: fan.age },
+                    fan: { name: fan.name, handle: fan.handle, type: fan.type, personality: fan.personality, age: fan.age, famousEvent: fan.famousEvent },
                     charAge: Number(char?.age) || 20,
                     userMessage,
                     playerMessage: message,           // ⭐ 额外字段：纯净的玩家消息（如果 edge function 支持就用得上）
@@ -1935,7 +1964,7 @@ const sendDM = async (fan, text, actionItem) => {
             addWorldState(`刷了${platformId === 'pann' ? 'Pann' : platformId === 'weibo' ? '微博' : '豆瓣'}论坛`);
             return;
         }
-        setLoading(true);
+        setForumLoading(true); // ✅ 用独立 loading，不影响主线剧情转圈
         addWorldState(`刷了${platformId === 'pann' ? 'Pann' : platformId === 'weibo' ? '微博' : '豆瓣'}论坛`);
         const unlockedNames = unlocked.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean);
         const gameContext = {
@@ -1949,7 +1978,7 @@ const sendDM = async (fan, text, actionItem) => {
         };
         const result = await callEdgeFunction('forum', { platformId, gameContext });
         if (result?.error) {
-            setLoading(false);
+            setForumLoading(false);
             alert(`📱 论坛加载失败：${result.error.slice(0, 80)}，请稍后再试。`);
             return;
         }
@@ -1966,11 +1995,11 @@ const sendDM = async (fan, text, actionItem) => {
             }
             return updated;
         });
-        setLoading(false);
+        setForumLoading(false);
     };
     
     const viewPost = async (post) => {
-        setLoading(true);
+        setForumLoading(true); // ✅ 独立 loading，不影响主线剧情
         addWorldState(`看了帖子《${post.title.slice(0,20)}》`);
         const unlockedNames = unlocked.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean);
         const gameContext = {
@@ -1989,12 +2018,12 @@ const sendDM = async (fan, text, actionItem) => {
             gameContext
         });
         if (result?.error) {
-            setLoading(false);
+            setForumLoading(false);
             alert(`💬 评论加载失败：${result.error.slice(0, 80)}，请稍后再试。`);
             return;
         }
         setForumContext(prev => ({ ...prev, selectedPost: { ...post, comments: result.comments || [], hot_comment: result.hot_comment } }));
-        setLoading(false);
+        setForumLoading(false);
     };
     
     // 风险等级
@@ -2507,7 +2536,7 @@ const sendDM = async (fan, text, actionItem) => {
                             <button className={`forum-tab ${forumContext.postTab === "latest" ? "active" : ""}`} onClick={() => setForumContext(prev => ({ ...prev, postTab: "latest" }))}>最新</button>
                         </div>
                         <div style={{ padding: 16, overflowY: "auto" }}>
-                            {forumContext.posts.length === 0 && (
+                            {(forumContext.posts.length === 0 || forumLoading) && (
                                 <div>
                                     {[1,2,3].map(i => (
                                         <div key={i} style={{ background: "#ffffff", borderRadius: 16, padding: 16, marginBottom: 12, animation: "pulse 1.5s infinite" }}>
@@ -2548,6 +2577,7 @@ const sendDM = async (fan, text, actionItem) => {
                     <div className="modal-content" onClick={e => e.stopPropagation()}>
                         <div className="modal-header"><h3>🔥 {forumContext.selectedPost.title}</h3><button className="modal-close" onClick={() => setForumContext(prev => ({ ...prev, selectedPost: null }))}>×</button></div>
                         <div style={{ padding: 16, overflowY: "auto" }}>
+                            {forumLoading && <div className="loading-spinner"><div className="spinner"></div><div>加载评论中...</div></div>}
                             {forumContext.selectedPost.hot_comment && (
                                 <div style={{ background: "rgba(250,204,21,0.1)", borderRadius: 12, padding: 12, marginBottom: 12 }}>
                                     <span style={{ color: "#a855f7", fontSize: 11 }}>🏆 最高赞 · {forumContext.selectedPost.hot_comment.user}</span>
@@ -3733,22 +3763,42 @@ function App() {
     const [loading, setLoading] = React.useState(true);
     const [slotsData, setSlotsData] = React.useState({});
     
+    // 切后台恢复：用户登录后检查是否有未完成的游戏存档
+    const tryRestoreActiveSlot = React.useCallback(async () => {
+        const savedSlot = sessionStorage.getItem('ehp_activeSlot');
+        if (!savedSlot) return;
+        const slotId = parseInt(savedSlot);
+        if (isNaN(slotId)) { sessionStorage.removeItem('ehp_activeSlot'); return; }
+        // 优先本地（快），失败再拉云端
+        let data = loadGameFromSlot(slotId);
+        if (!data?.char) data = await loadFromCloud(slotId);
+        if (data?.char) {
+            setCurrentSlot(slotId);
+            setGameData(data);
+        } else {
+            sessionStorage.removeItem('ehp_activeSlot');
+        }
+    }, []);
+
     React.useEffect(() => {
-        supabaseClient.auth.getSession().then(({ data: { session } }) => {
+        supabaseClient.auth.getSession().then(async ({ data: { session } }) => {
             if (session?.user) {
                 window._ehpUserId = session.user.id;
                 setUser(session.user);
-                loadAllSlots();
+                await loadAllSlots();
+                // 切后台回来后自动恢复上次游戏
+                await tryRestoreActiveSlot();
             } else {
                 setLoading(false);
             }
         });
         
-        const { data: { subscription } } = supabaseClient.auth.onAuthStateChange((_event, session) => {
+        const { data: { subscription } } = supabaseClient.auth.onAuthStateChange(async (_event, session) => {
             if (session?.user) {
                 window._ehpUserId = session.user.id;
                 setUser(session.user);
-                loadAllSlots();
+                await loadAllSlots();
+                await tryRestoreActiveSlot();
             } else {
                 window._ehpUserId = null;
                 setUser(null);
@@ -3784,6 +3834,7 @@ function App() {
     };
     
     const handleSelectSlot = (slotId, data) => {
+        sessionStorage.setItem('ehp_activeSlot', String(slotId));
         setCurrentSlot(slotId);
         setGameData(data);
     };
@@ -3794,18 +3845,21 @@ function App() {
     };
     
     const handleCompleteCreate = (slotId, data) => {
+        sessionStorage.setItem('ehp_activeSlot', String(slotId));
         setGameData(data);
         setCurrentSlot(slotId);
         setShowCreate(false);
     };
     
     const handleBack = () => {
+        sessionStorage.removeItem('ehp_activeSlot');
         setCurrentSlot(null);
         setGameData(null);
         setShowCreate(false);
     };
     
     const handleLogout = async () => {
+        sessionStorage.removeItem('ehp_activeSlot');
         if (!user?.isGuest) await supabaseClient.auth.signOut();
         setUser(null);
         setCurrentSlot(null);
