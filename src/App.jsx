@@ -5,7 +5,86 @@ import { createClient } from '@supabase/supabase-js';
 // ============================================================
 const SUPABASE_URL = "https://nojdevvfjivwepjwvyal.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_W-o5oaYeO1x9PFe53ww3Xw_xDuBTZI2";
-const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ============================================================
+// 【移动端关键修复】安全存储适配器
+// 微信/微博/抖音/QQ 内置浏览器、Safari 隐私模式下，访问 localStorage
+// 可能直接抛异常。Supabase 默认用 localStorage 存 session，一旦抛错，
+// getSession() 会卡住或 reject，导致首屏永久转圈（PC 正常、手机加载不出来）。
+// 这里用 try/catch 包一层，失败时退化到内存存储，保证永远不抛。
+// ============================================================
+const _memStore = {};
+const safeLocalStorage = {
+    getItem(key) { try { return window.localStorage.getItem(key); } catch (e) { return key in _memStore ? _memStore[key] : null; } },
+    setItem(key, value) { try { window.localStorage.setItem(key, value); } catch (e) { _memStore[key] = String(value); } },
+    removeItem(key) { try { window.localStorage.removeItem(key); } catch (e) { delete _memStore[key]; } }
+};
+const _memSession = {};
+const safeSessionStorage = {
+    getItem(key) { try { return window.sessionStorage.getItem(key); } catch (e) { return key in _memSession ? _memSession[key] : null; } },
+    setItem(key, value) { try { window.sessionStorage.setItem(key, value); } catch (e) { _memSession[key] = String(value); } },
+    removeItem(key) { try { window.sessionStorage.removeItem(key); } catch (e) { delete _memSession[key]; } }
+};
+
+// 给任意 Promise 加超时兜底：移动网络/冷启动卡住时不至于无限等待
+function withTimeout(promise, ms, fallback) {
+    return new Promise((resolve) => {
+        let done = false;
+        const t = setTimeout(() => { if (!done) { done = true; resolve(fallback); } }, ms);
+        Promise.resolve(promise).then(
+            (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } },
+            (e) => { if (!done) { done = true; clearTimeout(t); console.error('[withTimeout] rejected:', e); resolve(fallback); } }
+        );
+    });
+}
+
+// ============================================================
+// 【抗杀续档】活动槽位指针
+// sessionStorage 在 App 被系统杀死（iOS 主屏 PWA 重启、内存回收）后会清空，
+// 导致重开时回到存档选择页、而不是刚才那一幕。这里额外把“最近活动槽位 + 时间戳”
+// 写进 localStorage：
+//   · 30 分钟内重开 → 自动续上（无缝回到游戏）
+//   · 超过 30 分钟  → 进选择页，但顶部出现“继续上次”一键回到该存档
+// 存档数据本身始终在 localStorage(ehp_v16_*) + 云端，绝不会因被杀而丢失。
+// 想改成“只用按钮、永不自动续”，把 RESUME_WINDOW_MS 设为 0 即可。
+// ============================================================
+const ACTIVE_SLOT_KEY = 'ehp_activeSlot';   // 当前会话（sessionStorage，刷新/切后台用）
+const LAST_ACTIVE_KEY = 'ehp_lastActive';   // 跨重启（localStorage，带时间戳）
+const RESUME_WINDOW_MS = 30 * 60 * 1000;    // 30 分钟内自动续档；设 0 则禁用自动续
+
+function markActiveSlot(slotId) {
+    safeSessionStorage.setItem(ACTIVE_SLOT_KEY, String(slotId));
+    safeLocalStorage.setItem(LAST_ACTIVE_KEY, JSON.stringify({ slot: slotId, ts: Date.now() }));
+}
+// 仅刷新时间戳（游戏内每次自动存档时调用，保持“最近在玩”判定新鲜）
+function touchActiveSlot(slotId) {
+    safeLocalStorage.setItem(LAST_ACTIVE_KEY, JSON.stringify({ slot: slotId, ts: Date.now() }));
+}
+function clearActiveSlot() {
+    safeSessionStorage.removeItem(ACTIVE_SLOT_KEY);
+    safeLocalStorage.removeItem(LAST_ACTIVE_KEY);
+}
+// 读取跨重启指针，返回 { slot, ts, fresh } 或 null（fresh=是否在自动续窗口内）
+function readLastActive() {
+    const raw = safeLocalStorage.getItem(LAST_ACTIVE_KEY);
+    if (!raw) return null;
+    try {
+        const obj = JSON.parse(raw);
+        const slot = parseInt(obj.slot);
+        if (isNaN(slot)) return null;
+        const ts = Number(obj.ts) || 0;
+        return { slot, ts, fresh: RESUME_WINDOW_MS > 0 && (Date.now() - ts) <= RESUME_WINDOW_MS };
+    } catch (e) { return null; }
+}
+
+const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: {
+        storage: safeLocalStorage,
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
+    }
+});
 const FUNCTION_URL = `${SUPABASE_URL}/functions/v1/chat`;
 
 // ============================================================
@@ -169,11 +248,15 @@ function sanitizeAIResult(obj, char) {
 }
 
 async function callEdgeFunction(action, data) {
+    // 30 秒超时：DeepSeek 排队/边缘函数冷启动卡住时，返回错误而不是无限等待
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
         // 注入 userId 供后端 rate limiter 按用户识别
         const userId = window._ehpUserId || 'guest';
         const res = await fetch(FUNCTION_URL, {
             method: 'POST',
+            signal: controller.signal,
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
@@ -187,7 +270,13 @@ async function callEdgeFunction(action, data) {
         const char = window._ehpCurrentChar;
         if (char) return sanitizeAIResult(payload, char);
         return payload;
-    } catch(e) { console.error(e); return { error: e.message }; }
+    } catch(e) {
+        console.error(e);
+        const msg = e?.name === 'AbortError' ? '请求超时，请重试' : (e?.message || '网络错误');
+        return { error: msg };
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 function saveGameToSlot(slotId, data) {
@@ -267,12 +356,12 @@ function migrateSaveData(raw) {
     return data;
 }
 function loadGameFromSlot(slotId) {
-    const d = localStorage.getItem(`ehp_v16_${slotId}`);
+    const d = safeLocalStorage.getItem(`ehp_v16_${slotId}`);
     if (!d) return null;
     try { return migrateSaveData(JSON.parse(d)); } catch(e) { return null; }
 }
 function deleteGameFromSlot(slotId) {
-    localStorage.removeItem(`ehp_v16_${slotId}`);
+    safeLocalStorage.removeItem(`ehp_v16_${slotId}`);
     // 同时尝试删除云端存档（失败不阻塞）
     (async () => {
         try {
@@ -1288,6 +1377,7 @@ function GameApp({ slotId, initialData, onBack }) {
             saveFailedRef.current = false;
         }
         syncToCloud(slotId, saveData);
+        touchActiveSlot(slotId);   // 刷新“最近在玩”时间戳，支撑被杀后 30 分钟内自动续档
     }, [day, hearts, seaLevel, currentStory, currentChoices, currentRisk, suspicion, history, storySummary, schedules,
         attrs, money, teammates, fandomHeat, antiCount, fanEmotions, activeEvents, currentSchedule, dmReadStatus, dmHistories,
         coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract]);
@@ -3432,6 +3522,10 @@ function SlotSelector({ onSelectSlot, onCreateNew, onLogout }) {
         setLoading(false);
     };
     
+    // 跨重启续档指针：若指向的存档仍有数据，则在顶部显示“继续上次”
+    const lastActive = readLastActive();
+    const lastData = lastActive ? slots[lastActive.slot] : null;
+    
     return (
         <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #fdf2f8 0%, #fce7f3 50%, #e9d5ff 100%)", padding: "30px 20px" }}>
             <div style={{ maxWidth: 400, margin: "0 auto", textAlign: "center" }}>
@@ -3439,6 +3533,17 @@ function SlotSelector({ onSelectSlot, onCreateNew, onLogout }) {
                 <h1 style={{ fontSize: 32, fontWeight: "bold", color: "#4a1d5a", marginBottom: 8 }}>姐夫大作战 V16</h1>
                 <p style={{ color: "#9d6db8", fontSize: 13, marginBottom: 30 }}>终极完整版 · AI全生成 · 海后联动 · 大粉互撕 · 完整社交平台</p>
                 <button onClick={onLogout} className="btn-secondary" style={{ marginBottom: 20 }}>🚪 退出登录</button>
+                {lastData && (
+                    <button
+                        onClick={() => handleSelect(lastActive.slot)}
+                        disabled={loading}
+                        className="btn-primary"
+                        style={{ width: "100%", marginBottom: 18, padding: "13px 18px", fontSize: 15, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}
+                        title="回到上次正在玩的存档">
+                        <span>⏯ 继续上次</span>
+                        <span style={{ fontWeight: 400, fontSize: 12, opacity: 0.92 }}>存档{lastActive.slot} · {lastData.char?.artistName} · 第{lastData.day}天</span>
+                    </button>
+                )}
                 {[1, 2, 3].map(slotId => {
                     const data = slots[slotId];
                     return (
@@ -3765,61 +3870,100 @@ function App() {
     
     // 切后台恢复：用户登录后检查是否有未完成的游戏存档
     const tryRestoreActiveSlot = React.useCallback(async () => {
-        const savedSlot = sessionStorage.getItem('ehp_activeSlot');
-        if (!savedSlot) return;
-        const slotId = parseInt(savedSlot);
-        if (isNaN(slotId)) { sessionStorage.removeItem('ehp_activeSlot'); return; }
+        // 决定要不要自动续档：
+        //   1) 同会话（刷新 / 切后台但未被杀）：sessionStorage 有指针 → 直接续
+        //   2) 被系统杀死后重开：sessionStorage 已空，看 localStorage 时间戳
+        //      · 30 分钟内 → 自动续；超时 → 不自动续，交给选择页“继续上次”按钮
+        const sessionSlot = safeSessionStorage.getItem('ehp_activeSlot');
+        let slotId = null;
+        if (sessionSlot && !isNaN(parseInt(sessionSlot))) {
+            slotId = parseInt(sessionSlot);
+        } else {
+            const last = readLastActive();
+            if (last && last.fresh) slotId = last.slot;
+        }
+        if (slotId == null) return;
+
         // 优先本地（快），失败再拉云端
         let data = loadGameFromSlot(slotId);
         if (!data?.char) data = await loadFromCloud(slotId);
         if (data?.char) {
+            markActiveSlot(slotId);   // 归一化两个存储（被杀后 sessionStorage 为空，这里补回）
             setCurrentSlot(slotId);
             setGameData(data);
-        } else {
-            sessionStorage.removeItem('ehp_activeSlot');
         }
+        // 注意：失败时不清 lastActive —— 让选择页仍能显示“继续上次”（若该槽位确实没数据，按钮自然不出现）
     }, []);
 
     React.useEffect(() => {
-        supabaseClient.auth.getSession().then(async ({ data: { session } }) => {
-            if (session?.user) {
-                window._ehpUserId = session.user.id;
-                setUser(session.user);
-                await loadAllSlots();
-                // 切后台回来后自动恢复上次游戏
-                await tryRestoreActiveSlot();
-            } else {
-                setLoading(false);
+        let cancelled = false;
+        // 【移动端关键修复】看门狗：无论 getSession / 云端加载发生什么，
+        // 最多 7 秒后必须结束 loading，避免手机端网络抖动或存储异常时永久转圈。
+        const watchdog = setTimeout(() => {
+            if (!cancelled) setLoading(false);
+        }, 7000);
+        const finishLoading = () => {
+            if (cancelled) return;
+            clearTimeout(watchdog);
+            setLoading(false);
+        };
+
+        const bootstrap = async (session) => {
+            try {
+                if (session?.user) {
+                    window._ehpUserId = session.user.id;
+                    if (!cancelled) setUser(session.user);
+                    await loadAllSlots();
+                    await tryRestoreActiveSlot();
+                }
+            } catch (e) {
+                console.error('[bootstrap] 初始化失败:', e);
+            } finally {
+                finishLoading();
             }
-        });
-        
-        const { data: { subscription } } = supabaseClient.auth.onAuthStateChange(async (_event, session) => {
-            if (session?.user) {
+        };
+
+        // getSession 读本地，理论上很快，但仍加 catch + 超时兜底
+        withTimeout(supabaseClient.auth.getSession(), 6000, { data: { session: null } })
+            .then((res) => bootstrap(res?.data?.session))
+            .catch((e) => { console.error('[getSession] 失败:', e); finishLoading(); });
+
+        // 只处理“真正的”登录/登出，避免与上面的 getSession 重复触发 loadAllSlots
+        const { data: { subscription } } = supabaseClient.auth.onAuthStateChange((event, session) => {
+            if (cancelled) return;
+            if (event === 'SIGNED_IN' && session?.user) {
                 window._ehpUserId = session.user.id;
                 setUser(session.user);
-                await loadAllSlots();
-                await tryRestoreActiveSlot();
-            } else {
+                loadAllSlots();
+                tryRestoreActiveSlot();
+            } else if (event === 'SIGNED_OUT') {
                 window._ehpUserId = null;
                 setUser(null);
                 setSlotsData({});
                 setLoading(false);
             }
         });
-        
-        return () => subscription.unsubscribe();
+
+        return () => { cancelled = true; clearTimeout(watchdog); subscription.unsubscribe(); };
     }, []);
     
     const loadAllSlotsFromCloud = async () => {
         try {
-            const { data: { user } } = await supabaseClient.auth.getUser();
-            if (!user) return {};
-            const { data } = await supabaseClient.from('saves').select('slot_id, game_data').eq('user_id', user.id);
+            // 复用已知的 userId（bootstrap 里已写入），避免再发一次 getUser() 网络请求
+            let userId = window._ehpUserId;
+            if (!userId) {
+                const r = await withTimeout(supabaseClient.auth.getSession(), 4000, { data: { session: null } });
+                userId = r?.data?.session?.user?.id;
+            }
+            if (!userId) return {};
+            const query = supabaseClient.from('saves').select('slot_id, game_data').eq('user_id', userId);
+            // 云端查询加 6 秒超时：手机网络卡住时返回空而不是无限等待
+            const { data } = await withTimeout(query, 6000, { data: null });
             if (!data) return {};
             const result = {};
             data.forEach(row => { result[row.slot_id] = row.game_data; });
             return result;
-        } catch(e) { return {}; }
+        } catch(e) { console.error('[loadAllSlotsFromCloud]', e); return {}; }
     };
 
     const loadAllSlots = async () => {
@@ -3834,7 +3978,7 @@ function App() {
     };
     
     const handleSelectSlot = (slotId, data) => {
-        sessionStorage.setItem('ehp_activeSlot', String(slotId));
+        markActiveSlot(slotId);
         setCurrentSlot(slotId);
         setGameData(data);
     };
@@ -3845,21 +3989,21 @@ function App() {
     };
     
     const handleCompleteCreate = (slotId, data) => {
-        sessionStorage.setItem('ehp_activeSlot', String(slotId));
+        markActiveSlot(slotId);
         setGameData(data);
         setCurrentSlot(slotId);
         setShowCreate(false);
     };
     
     const handleBack = () => {
-        sessionStorage.removeItem('ehp_activeSlot');
+        clearActiveSlot();
         setCurrentSlot(null);
         setGameData(null);
         setShowCreate(false);
     };
     
     const handleLogout = async () => {
-        sessionStorage.removeItem('ehp_activeSlot');
+        clearActiveSlot();
         if (!user?.isGuest) await supabaseClient.auth.signOut();
         setUser(null);
         setCurrentSlot(null);
