@@ -1,15 +1,36 @@
 {
   "name": "EHP之姐夫大作战",
-  "short_name": "EHP",
+  "short_name": "姐夫大作战",
+  "description": "AI 全生成的偶像养成文字游戏：海后联动、大粉互撕、完整社交平台。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#fff0fa",
-  "theme_color": "#ff80ab",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#fdf2f8",
+  "theme_color": "#ec4899",
+  "categories": ["games", "entertainment"],
   "icons": [
     {
-      "src": "icon.png",
+      "src": "/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }
