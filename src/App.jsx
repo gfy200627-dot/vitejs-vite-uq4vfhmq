@@ -519,7 +519,11 @@ function makePost(p) {
 function normalizeSocialResult(platform, r) {
     if (!r) return [];
     const arr = r.posts || r.tweets || r.videos || [];
-    return arr.map(makePost);
+    // ⭐ 过滤掉 AI 返回的空帖（没有正文/标题/媒体）——否则会渲染出只有点赞数和
+    // "做数据"按钮、却没有任何文字的"幽灵帖"（微博/INS 里那种空白卡片）。
+    return arr
+        .map(makePost)
+        .filter(p => p.mine || (p.content && p.content.trim()) || (p.title && p.title.trim()) || p.media);
 }
 // 平台配置：标题、是否可发帖、发帖类型、卡片样式、主控可发自拍/视频的媒体标签
 const SOCIAL_CFG = {
@@ -617,6 +621,24 @@ function PostCard({ post, cfg, artistName, onOpen, onLike, onData }) {
     );
 }
 
+// ⭐ 过滤弱模型返回的空弹幕/重复弹幕：text 为空的直接丢（治直播里反复出现的
+// "空名"——只有用户名没正文的那种），并去掉同一批里完全重复的条目，顺手 trim。
+function cleanDanmakuList(list) {
+    if (!Array.isArray(list)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const c of list) {
+        const text = (c?.text ?? "").toString().trim();
+        if (!text) continue;
+        const user = (c?.user ?? "").toString().trim();
+        const key = `${user}|${text}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ ...c, text, user });
+    }
+    return out;
+}
+
 // 发帖器
 // ============================================================
 // 直播组件（独立，避免 renderModal 里 Hooks 违规）
@@ -696,11 +718,12 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                     gameContext: { seaLevel: ctx.seaLevel, riskLevel: ctx.currentRisk, fandomHeat: ctx.fandomHeat, antiCount: ctx.antiCount, artistName: char?.artistName, nickname: char?.nickname },
                     liveContext: liveContextPayload
                 });
-                if (result.comments?.length) {
-                    danmakuBufferRef.current.push(...result.comments);
+                const clean = cleanDanmakuList(result.comments);  // ⭐ 丢空弹幕/重复
+                if (clean.length) {
+                    danmakuBufferRef.current.push(...clean);
                     startDrip();
-                } else if (result?.error) {
-                    // ✅ 服务器/网络错误：放一条占位弹幕，避免永远停在"弹幕加载中…"
+                } else {
+                    // ✅ 服务器/网络错误或全是空弹幕：放一条占位，避免永远停在"弹幕加载中…"
                     danmakuBufferRef.current.push({ user: "💬", text: "（弹幕加载有点慢，稍等一下~）", type: "fan" });
                     startDrip();
                 }
@@ -768,9 +791,16 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
     const cancelReply = () => setSelectedDanmaku(null);
 
     const getBigFanColor = (msg) => {
-        if (msg.type !== "big_fan" && !msg.fanId && !msg.color) return null;
-        const fan = FANS.find(f => f.id === msg.fanId || msg.user.includes(f.name) || msg.user.includes(f.handle.replace("@","")));
-        return fan?.color || msg.color || null;
+        // ⭐ 关键修复：先按用户名/handle 直接匹配大粉。弱模型经常只把 user 填成
+        // "梁祯元"，却漏了 type/fanId/color 这几个字段——旧逻辑会因此 return null，
+        // 导致一屋子大粉里只有恰好填全字段的那一个被标注（"只有男主被标大粉"）。
+        const fan = FANS.find(f =>
+            f.id === msg.fanId ||
+            (msg.user && (msg.user.includes(f.name) || msg.user.includes(f.handle.replace("@", "")))));
+        if (fan) return fan.color;
+        // 没匹配到具体人，但模型显式标了 big_fan / 给了颜色，也按大粉处理
+        if (msg.type === "big_fan" || msg.color) return msg.color || "#a855f7";
+        return null;
     };
 
     // ✅ 防重入 ref：玩家连续快速发言时只保留最新一次请求
@@ -823,10 +853,11 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                 gameContext: { seaLevel, riskLevel: currentRisk, fandomHeat, antiCount, artistName: char?.artistName, nickname: char?.nickname },
                 liveContext: liveContextPayload
             });
-            if (result.comments?.length) {
+            const clean = cleanDanmakuList(result.comments);  // ⭐ 丢空弹幕/重复
+            if (clean.length) {
                 // ⭐ 玩家刚说话/做动作触发的弹幕：插到缓冲队列最前面，并打上 _priority 标记，
                 // 否则会排在后台批量拉的十几条后面，要等 15-25 秒才滚出来（体感"说了话没人理"）。
-                danmakuBufferRef.current.unshift(...result.comments.map(c => ({ ...c, _priority: true })));
+                danmakuBufferRef.current.unshift(...clean.map(c => ({ ...c, _priority: true })));
                 startDrip();
             } else {
                 // ✅ API 返回但评论为空时：给一条占位弹幕，避免"说了话没人理"
@@ -922,6 +953,8 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                 <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", background: "linear-gradient(180deg, #fdf4ff, #fce7f3)" }}>
                     {liveMessages.map((msg, i) => {
                         const isHost = msg.isHost || msg.type === "host";
+                        // ⭐ 双保险：任何漏网的空文本弹幕（非主播）一律不渲染
+                        if (!isHost && !(msg.text && String(msg.text).trim())) return null;
                         const bigFanColor = !isHost ? getBigFanColor(msg) : null;
                         const isBigFan = !!bigFanColor;
                         const fanObj = isBigFan ? FANS.find(f => f.id === msg.fanId || msg.user.includes(f.name)) : null;
@@ -1281,7 +1314,7 @@ function GameApp({ slotId, initialData, onBack }) {
             // 同时把大粉/姐夫站帖子注入对应 feed
             result.dynamics.forEach(d => {
                 const feedKey = d.platform?.includes("姐夫") ? `jiefu:jiefu` : d.platform === "Pann" ? null : "cpost:weibo";
-                if (feedKey) {
+                if (feedKey && d.content && String(d.content).trim()) {  // ⭐ 空内容不注入，避免幽灵帖
                     const ripplePost = makePost({ author: d.author, content: d.content, likes: Math.floor(Math.random() * 5000) + 500, time: "刚刚" });
                     setSocialFeeds(prev => ({ ...prev, [feedKey]: [ripplePost, ...(prev[feedKey] || []).slice(0, 8)] }));
                 }
