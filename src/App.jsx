@@ -350,6 +350,7 @@ function migrateSaveData(raw) {
         data.companyContract = { ...data.companyContract, signed: true };
     }
     if (data.scheduleMap === undefined) data.scheduleMap = {};
+    if (data.dailyPlan === undefined) data.dailyPlan = { morning: null, noon: null, evening: null };
     if (data.tiktokAlt === undefined) data.tiktokAlt = null;
     if (data.socialDynamics === undefined) data.socialDynamics = [];
     if (data.socialFeeds === undefined) data.socialFeeds = {};
@@ -466,6 +467,63 @@ function generateRandomSchedule(day) {
         { name: "粉丝签售",素材:3,人气:4 }, { name: "休息日",素材:1,人气:0 }
     ];
     return schedules[(day-1) % schedules.length];
+}
+
+// ============================================================
+// 【日程系统】玩家自定义早/中/晚行程
+// 每个时段可选一个活动，活动效果会真实作用到属性/资金/风险等。
+// attrs 字段直接对应核心/实力属性；money/fandom/suspicion/risk 走各自的更新函数。
+// ============================================================
+const SCHEDULE_SLOTS = [
+    { key: "morning", label: "早", emoji: "🌅", desc: "上午时段" },
+    { key: "noon", label: "中", emoji: "☀️", desc: "下午时段" },
+    { key: "evening", label: "晚", emoji: "🌙", desc: "晚间时段" }
+];
+
+const SCHEDULE_OPTIONS = {
+    morning: [
+        { id: "m_dance", emoji: "💃", name: "练舞房", attrs: { dance: 2, 颜值: 1 }, desc: "Dance+2 颜值+1" },
+        { id: "m_vocal", emoji: "🎤", name: "声乐课", attrs: { vocal: 2 }, desc: "Vocal+2" },
+        { id: "m_gym", emoji: "🏋️", name: "晨间健身", attrs: { 颜值: 2 }, desc: "颜值+2" },
+        { id: "m_sleep", emoji: "😴", name: "睡到自然醒", attrs: {}, risk: -1, desc: "养精蓄锐 · 风险-1" }
+    ],
+    noon: [
+        { id: "n_variety", emoji: "📺", name: "综艺录制", attrs: { 人气值: 3, 国民度: 1 }, desc: "人气+3 国民度+1" },
+        { id: "n_magazine", emoji: "📸", name: "杂志拍摄", attrs: { 颜值: 2, 时尚度: 2 }, desc: "颜值+2 时尚度+2" },
+        { id: "n_brand", emoji: "👜", name: "品牌活动", attrs: { 时尚度: 2 }, money: 6, desc: "时尚度+2 资金+6万" },
+        { id: "n_studio", emoji: "🎙️", name: "录音棚", attrs: { rap: 2, vocal: 1 }, desc: "Rap+2 Vocal+1" }
+    ],
+    evening: [
+        { id: "e_live", emoji: "🔴", name: "晚间直播", attrs: { 人气值: 2 }, fandom: 2, desc: "人气+2 粉圈热度+2（之后可去Weverse开播）" },
+        { id: "e_sns", emoji: "📱", name: "营业发图", attrs: { 人气值: 2, 国民度: 1 }, desc: "人气+2 国民度+1" },
+        { id: "e_review", emoji: "📚", name: "复盘充电", attrs: { vocal: 1, dance: 1, rap: 1 }, desc: "三维各+1" },
+        { id: "e_rest", emoji: "🛁", name: "居家休息", attrs: {}, suspicion: -1, desc: "放空自己 · 疑虑-1" }
+    ]
+};
+
+// 按 id 找活动（跨时段查找）
+function findScheduleActivity(id) {
+    if (!id) return null;
+    for (const slot of Object.keys(SCHEDULE_OPTIONS)) {
+        const hit = SCHEDULE_OPTIONS[slot].find(a => a.id === id);
+        if (hit) return hit;
+    }
+    return null;
+}
+
+// 把一天的行程记录（兼容旧随机格式）总结成一行可读文本，给日历用
+function summarizeScheduleEntry(entry) {
+    if (!entry) return "";
+    // 新格式：{ morning, noon, evening }
+    if (entry.morning !== undefined || entry.noon !== undefined || entry.evening !== undefined) {
+        const parts = SCHEDULE_SLOTS.map(s => {
+            const a = findScheduleActivity(entry[s.key]);
+            return a ? a.name : null;
+        }).filter(Boolean);
+        return parts.length ? parts.join("·") : "自由活动";
+    }
+    // 旧随机格式：{ name }
+    return entry.name || "";
 }
 
 // ============================================================
@@ -694,7 +752,7 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
         drip();
     }, [setLiveMessages]);
 
-    // 后台定时批量拉弹幕，补充buffer（每18秒一批）
+    // 开播时拉一批进场弹幕（只此一次，不再后台轮询）
     React.useEffect(() => {
         if (!liveStarted) return;
         const fetchBatch = async (phaseHint) => {
@@ -734,19 +792,10 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                 startDrip();
             }
         };
-        // 开播立刻拉一批
+        // ⭐ 开播只拉这一批弹幕；之后【不再后台自动生成】，改为等玩家说话/做动作/翻牌时才生成。
+        // 这样弹幕缓冲区不会被后台批次堆满，玩家发言后的回复能立刻插队滚出，彻底消除"回复滞后"。
         fetchBatch("开播");
-        // 每18s自动续一批（先更新phase，让ref同步，再拉弹幕）
-        const t = setInterval(() => {
-            setLivePhase(p => {
-                const next = Math.min(p + 1, 2);
-                livePhaseRef.current = next; // 立即同步ref，确保fetchBatch读到最新值
-                return next;
-            });
-            // 用 setTimeout(0) 确保 livePhaseRef 已更新
-            setTimeout(() => fetchBatch(), 0);
-        }, 18000);
-        return () => clearInterval(t);
+        // 注意：故意不设 setInterval —— 直播间在玩家不操作时保持安静，等待玩家继续操作。
     }, [liveStarted, livePlatform, startDrip]);
 
     const startLive = async () => {
@@ -805,6 +854,9 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
 
     // ✅ 防重入 ref：玩家连续快速发言时只保留最新一次请求
     const fetchingDanmakuRef = React.useRef(false);
+    // ⭐ 上一次请求还在路上时，把"玩家最新一次发言"暂存在这里，等当前请求结束立刻补发，
+    //    确保玩家最新发言绝不会石沉大海（旧逻辑是直接 return 丢弃，会出现"说了话没人理"）。
+    const pendingDanmakuArgsRef = React.useRef(null);
 
     // isSpeech=true 时传 playerSpeech，false 时传 playerAction
     // isSpeech=true 时传 playerSpeech，false 时传 playerAction
@@ -815,8 +867,11 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
             lastPlayerSpeechRef.current = { text: action, time: Date.now() };
         }
         // ⭐ 真正"回复了某条大粉弹幕" → 该大粉心动 +3（从原来"点一下就加"挪到这里，更合理也更难刷）
-        // ✅ 防重入：如果上一次请求还没回来，跳过（不阻塞直播体验）
-        if (fetchingDanmakuRef.current) return;
+        // ✅ 防重入：如果上一次请求还没回来，把这次"最新一次"暂存，等当前请求结束再补发（不丢弃）
+        if (fetchingDanmakuRef.current) {
+            pendingDanmakuArgsRef.current = { action, isSpeech, replyTarget };
+            return;
+        }
         fetchingDanmakuRef.current = true;
         if (replyTarget?.fanId) updateHearts({ [replyTarget.fanId]: 3 });
         // 取最近8条弹幕做上下文
@@ -840,7 +895,7 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                     // ⭐ 强约束：必须直接回应主播刚说的话
                     instruction: replyTarget
                         ? `主播（${char?.artistName || "本人"}）在直播间公开回复了【${replyTarget.user}】的弹幕「${replyTarget.text}」，并对TA说：「${action}」。请让【${replyTarget.user}】本人激动回应，其余粉丝羡慕起哄。`
-                        : `主播（${char?.artistName || "本人"}）刚刚开口说：「${action}」。生成的弹幕里至少有 5 条必须直接回应这句话的具体内容（接梗、反应、追问、起哄、共情等），不要写跟这句话无关的通用弹幕。`
+                        : `主播（${char?.artistName || "本人"}）刚刚开口说：「${action}」。这批 9-10 条弹幕里至少有一半（含相关的几位男主）必须直接回应这句话的具体内容（接梗、反应、追问、起哄、共情等），不要写跟这句话无关的通用弹幕。`
                 }
                 : {
                     playerAction: action,
@@ -871,6 +926,12 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
             startDrip();
         } finally {
             fetchingDanmakuRef.current = false;
+            // ⭐ 有暂存的最新发言 → 立刻补发，保证玩家最后那句话也能拿到弹幕回应
+            const pending = pendingDanmakuArgsRef.current;
+            if (pending) {
+                pendingDanmakuArgsRef.current = null;
+                fetchMoreDanmaku(pending.action, pending.isSpeech, pending.replyTarget);
+            }
         }
     };
 
@@ -1234,6 +1295,7 @@ function GameApp({ slotId, initialData, onBack }) {
     const [history, setHistory] = React.useState(initialData.history || []);
     const [schedules, setSchedules] = React.useState(initialData.schedules || {});
     const [scheduleMap, setScheduleMap] = React.useState(initialData.scheduleMap || {}); // 每天实际行程记录
+    const [dailyPlan, setDailyPlan] = React.useState(initialData.dailyPlan || { morning: null, noon: null, evening: null }); // 今日早/中/晚行程（待确认）
     const [currentSchedule, setCurrentSchedule] = React.useState(initialData.currentSchedule || generateRandomSchedule(1));
     const [activeEvents, setActiveEvents] = React.useState(initialData.activeEvents || []);
     const [coupleExposure, setCoupleExposure] = React.useState(initialData.coupleExposure || null);
@@ -1247,6 +1309,8 @@ function GameApp({ slotId, initialData, onBack }) {
     const dmEndRef = React.useRef(null); // DM线程自动滚动ref（必须用useRef而非createRef，后者在渲染时每次新建）
     // DM线程新消息时自动滚到底
     React.useEffect(() => { dmEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [paidDmDaily]);
+    // ⭐ KakaoTalk 私聊：新消息到达 / 打开私聊时，自动把最新消息滚到可见处，不用玩家手划
+    const kakaoEndRef = React.useRef(null);
     
     // UI 状态
     const [activeTab, setActiveTab] = React.useState("story");
@@ -1265,6 +1329,21 @@ function GameApp({ slotId, initialData, onBack }) {
     const [error, setError] = React.useState(null);
     const [customMode, setCustomMode] = React.useState(false);
     const [customText, setCustomText] = React.useState("");
+
+    // ⭐ 主线剧情生成时，自动把视线焦点拉回新剧情开头（不用玩家自己往上划）
+    const storyTopRef = React.useRef(null);
+    React.useEffect(() => {
+        if (activeTab !== "story") return;
+        // 用 rAF 等 DOM 渲染完再滚：开始生成(loading)与新剧情落定(currentStory变化)时都回正到剧情顶部
+        requestAnimationFrame(() => storyTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    }, [currentStory, loading, activeTab]);
+
+    // ⭐ KakaoTalk 私聊：新消息到达 / 刚打开私聊时，自动把最新一条滚到可见处
+    React.useEffect(() => {
+        if (activeModal === "kakao_dm" && showPrivateChat) {
+            requestAnimationFrame(() => kakaoEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }));
+        }
+    }, [dmHistories, showPrivateChat, activeModal]);
     
     // 社交平台数据缓存
     const [socialCache, setSocialCache] = React.useState({});
@@ -1466,7 +1545,7 @@ function GameApp({ slotId, initialData, onBack }) {
             char, day, hearts, seaLevel, unlocked, currentStory, currentChoices, currentRisk, suspicion,
             history, storySummary, schedules, attrs, money, teammates, fandomHeat, antiCount, fanEmotions,
             activeEvents, currentSchedule, dmReadStatus, dmHistories, coupleExposure, paidDmDaily,
-            companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract
+            companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan
         };
         const r = saveGameToSlot(slotId, saveData);
         if (r && r.ok === false) {
@@ -1481,11 +1560,13 @@ function GameApp({ slotId, initialData, onBack }) {
         touchActiveSlot(slotId);   // 刷新“最近在玩”时间戳，支撑被杀后 30 分钟内自动续档
     }, [day, hearts, seaLevel, currentStory, currentChoices, currentRisk, suspicion, history, storySummary, schedules,
         attrs, money, teammates, fandomHeat, antiCount, fanEmotions, activeEvents, currentSchedule, dmReadStatus, dmHistories,
-        coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract]);
+        coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan]);
     
     // 每日推进
     React.useEffect(() => {
         setCurrentSchedule(generateRandomSchedule(day));
+        // ⭐ 新的一天，清空待确认的早/中/晚行程，让玩家重新安排
+        setDailyPlan({ morning: null, noon: null, evening: null });
     }, [day]);
     
     // 事件系统
@@ -1581,6 +1662,51 @@ function GameApp({ slotId, initialData, onBack }) {
                 relationshipStatus: changes.relationshipStatus ?? prev[fanId]?.relationshipStatus
             }
         }));
+    };
+
+    // ⭐【日程系统】确认今日行程：把早/中/晚选中活动的效果一次性结算，并锁定当天（防刷）
+    const confirmDailyPlan = () => {
+        if (scheduleMap[day]) {  // 今天已结算过 → 不重复加成
+            setToastMsg("📋 今日行程已经执行过啦~");
+            setTimeout(() => setToastMsg(""), 2500);
+            return;
+        }
+        const picks = SCHEDULE_SLOTS.map(s => findScheduleActivity(dailyPlan[s.key])).filter(Boolean);
+        if (picks.length === 0) {
+            setToastMsg("先安排至少一个时段再确认~");
+            setTimeout(() => setToastMsg(""), 2500);
+            return;
+        }
+        // 汇总各活动效果
+        const attrDelta = {};
+        let moneyDelta = 0, riskDelta = 0, fandomDelta = 0, suspicionDelta = 0;
+        picks.forEach(a => {
+            Object.entries(a.attrs || {}).forEach(([k, v]) => { attrDelta[k] = (attrDelta[k] || 0) + v; });
+            if (a.money) moneyDelta += a.money;
+            if (a.risk) riskDelta += a.risk;
+            if (a.fandom) fandomDelta += a.fandom;
+            if (a.suspicion) suspicionDelta += a.suspicion;
+        });
+        // 应用属性（0-100 钳制）
+        if (Object.keys(attrDelta).length) {
+            setAttrs(prev => {
+                const next = { ...prev };
+                Object.entries(attrDelta).forEach(([k, v]) => {
+                    next[k] = Math.max(0, Math.min(100, (prev[k] || 0) + v));
+                });
+                return next;
+            });
+        }
+        if (moneyDelta) updateMoney(moneyDelta);
+        if (fandomDelta) setFandomHeat(prev => Math.max(0, Math.min(100, prev + fandomDelta)));
+        if (suspicionDelta) updateSuspicion(suspicionDelta);
+        if (riskDelta) updateRisk(riskDelta);
+        // 落档到日历 + 反馈
+        setScheduleMap(prev => ({ ...prev, [day]: { ...dailyPlan, confirmed: true } }));
+        addWorldState(`安排了今天的行程：${picks.map(a => a.name).join("、")}`);
+        vibrate(VIBE.unlock); playSFX('unlock');
+        setToastMsg(`📋 今日行程已执行：${picks.map(a => a.emoji + a.name).join(" · ")}`);
+        setTimeout(() => setToastMsg(""), 3500);
     };
     
     // 社交平台内容刷新
@@ -1765,7 +1891,8 @@ function GameApp({ slotId, initialData, onBack }) {
             // 重置同回合 risk 累积计数
             riskTurnAccumRef.current = 0;
             // 记录今天的日程到 scheduleMap（日历持久化）
-            setScheduleMap(prev => ({ ...prev, [day]: currentSchedule }));
+            // ⭐ 玩家已自定义并确认行程时不覆盖；只有当天完全没安排，才落一条随机行程占位
+            setScheduleMap(prev => (prev[day] ? prev : { ...prev, [day]: currentSchedule }));
             setSocialCache({});
             setSocialFeeds(prev => {
                 const next = {};
@@ -2052,7 +2179,10 @@ const sendDM = async (fan, text, actionItem) => {
         // 3. 并发请求六位大粉回复（Promise.all，不再串行）
         FANS.forEach(fan => addRecentInteraction(fan.id, `你在付费DM发消息：${message.slice(0, 40)}`));
         
-        const fanPromises = FANS.map(async (fan) => {
+        // ⭐ 改为"惰性任务"而非立即并发：FANS.map(async ...) 会让 6 个 LLM 请求瞬间同时发出，
+        //   极易在硅基撞到每分钟请求/Token 上限(429)，而 429 一旦触发，接下来一整分钟内
+        //   手机里所有功能（论坛/评论/弹幕/社媒）都会跟着加载失败或变慢。下面用并发池限到 2。
+        const fanTasks = FANS.map((fan) => async () => {
             // ⭐ 重写 userMessage：把玩家消息放最前面，引用信息和场景说明放后面
             const isQuoted = fan.id === quoteInfo?.fanId;
             const quotedPrev = isQuoted ? (quoteInfo.text || "").slice(0, 80) : null;
@@ -2097,7 +2227,15 @@ const sendDM = async (fan, text, actionItem) => {
             }
             return null;
         });
-        await Promise.all(fanPromises);
+        // 并发池：最多同时跑 2 个，跑完一个再补下一个，避免一次性 6 个把限额打爆
+        let _fanIdx = 0;
+        const runFanPool = async () => {
+            while (_fanIdx < fanTasks.length) {
+                const k = _fanIdx++;
+                await fanTasks[k]();
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(2, fanTasks.length) }, runFanPool));
 
         // 4. 如果引用的是某位大粉，触发炫耀帖
         if (quoteInfo?.fanId) {
@@ -2294,8 +2432,11 @@ const sendDM = async (fan, text, actionItem) => {
                 ))}
             </div>
             <div className="sidebar-section">
-                <h4>📋 今日日程</h4>
-                <div className="sidebar-item"><span>{currentSchedule.name}</span><span>素材+{currentSchedule.素材}</span></div>
+                <h4>📋 今日行程{scheduleMap[day] ? "（已执行）" : ""}</h4>
+                {SCHEDULE_SLOTS.map(s => {
+                    const a = findScheduleActivity((scheduleMap[day] || dailyPlan)[s.key]);
+                    return <div key={s.key} className="sidebar-item"><span>{s.emoji} {s.label}</span><span>{a ? a.name : "—"}</span></div>;
+                })}
             </div>
             <div className="sidebar-section">
                 <h4>📱 社交账号</h4>
@@ -2349,7 +2490,7 @@ const sendDM = async (fan, text, actionItem) => {
                             💕 {highHeartEvent.message} 💕
                         </div>
                     )}
-                    <div className="story-card">
+                    <div className="story-card" ref={storyTopRef}>
                         {/* 氛围标签 */}
                         <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
                             <span style={{ fontSize: 10, color: "#b88dc7" }}>🎭 氛围：</span>
@@ -2576,8 +2717,11 @@ const sendDM = async (fan, text, actionItem) => {
                         ))}
                     </div>
                     <div className="sidebar-section">
-                        <h4>📋 今日日程</h4>
-                        <div className="sidebar-item"><span>{currentSchedule.name}</span><span>素材+{currentSchedule.素材}</span></div>
+                        <h4>📋 今日行程{scheduleMap[day] ? "（已执行）" : ""}</h4>
+                        {SCHEDULE_SLOTS.map(s => {
+                            const a = findScheduleActivity((scheduleMap[day] || dailyPlan)[s.key]);
+                            return <div key={s.key} className="sidebar-item"><span>{s.emoji} {s.label}</span><span>{a ? a.name : "—"}</span></div>;
+                        })}
                     </div>
                     <div className="sidebar-section">
                         <h4>📱 社交账号</h4>
@@ -3106,6 +3250,7 @@ const sendDM = async (fan, text, actionItem) => {
                                         <div className="dm-time">{m.time || ""}{m.isMe && <span className="dm-read">已读</span>}</div>
                                     </div>
                                 ))}
+                                <div ref={kakaoEndRef} />
                             </div>
                             <div className="dm-actions">
                                 {KAKAO_ACTIONS.map((action, i) => (
@@ -3244,37 +3389,83 @@ const sendDM = async (fan, text, actionItem) => {
             );
         }
 
-        // ========== 日程表 ==========
+        // ========== 日程表（玩家自定义早/中/晚行程） ==========
         if (activeModal === "calendar") {
+            const todayRecord = scheduleMap[day];
+            const lockedToday = !!todayRecord;  // 今天已确认结算 → 锁定不可再改
             return (
                 <div className="modal-overlay" onClick={() => setActiveModal(null)}>
-                    <div className="modal-content" onClick={e => e.stopPropagation()}>
-                        <div className="modal-header"><h3>📅 日程表 · 第 {day} 天</h3><button className="modal-close" onClick={() => setActiveModal(null)}>×</button></div>
-                        <div style={{ padding: "8px 16px", color: "#a855f7", fontSize: 13, textAlign: "center" }}>
-                            今日：{currentSchedule.name}（素材+{currentSchedule.素材} · 人气+{currentSchedule.人气}）
+                    <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxHeight: "88vh", overflowY: "auto" }}>
+                        <div className="modal-header"><h3>📅 今日行程 · 第 {day} 天</h3><button className="modal-close" onClick={() => setActiveModal(null)}>×</button></div>
+                        <div style={{ padding: "4px 16px 0", color: "#9d6db8", fontSize: 12, textAlign: "center", lineHeight: 1.5 }}>
+                            {lockedToday ? "✅ 今日行程已执行，效果已结算" : "自己安排早 / 中 / 晚要做的事，确认后立即生效（每天只能结算一次）"}
                         </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, padding: 16 }}>
+
+                        {/* 三个时段选择 */}
+                        <div style={{ padding: "12px 16px 4px" }}>
+                            {SCHEDULE_SLOTS.map(slot => {
+                                const chosenId = lockedToday ? todayRecord?.[slot.key] : dailyPlan[slot.key];
+                                return (
+                                    <div key={slot.key} style={{ marginBottom: 14 }}>
+                                        <div style={{ fontSize: 13, fontWeight: 600, color: "#4a1d5a", marginBottom: 6 }}>{slot.emoji} {slot.label}（{slot.desc}）</div>
+                                        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                                            {SCHEDULE_OPTIONS[slot.key].map(opt => {
+                                                const active = chosenId === opt.id;
+                                                return (
+                                                    <button key={opt.id} disabled={lockedToday}
+                                                        onClick={() => setDailyPlan(prev => ({ ...prev, [slot.key]: prev[slot.key] === opt.id ? null : opt.id }))}
+                                                        style={{
+                                                            textAlign: "left", padding: "8px 10px", borderRadius: 12, cursor: lockedToday ? "default" : "pointer",
+                                                            border: active ? "1.5px solid #d946a8" : "1px solid rgba(217,70,168,0.18)",
+                                                            background: active ? "linear-gradient(135deg,#fce7f3,#f3e8ff)" : "#fff",
+                                                            opacity: lockedToday && !active ? 0.4 : 1
+                                                        }}>
+                                                        <div style={{ fontSize: 13, color: "#4a1d5a", fontWeight: 500 }}>{opt.emoji} {opt.name}</div>
+                                                        <div style={{ fontSize: 10, color: "#9d6db8", marginTop: 2 }}>{opt.desc}</div>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        {/* 确认 / 已执行 */}
+                        <div style={{ padding: "0 16px 12px" }}>
+                            {lockedToday ? (
+                                <div style={{ textAlign: "center", padding: "10px", borderRadius: 12, background: "rgba(74,222,128,0.12)", color: "#16a34a", fontSize: 13 }}>
+                                    ✅ 今日行程已执行：{summarizeScheduleEntry(todayRecord)}
+                                </div>
+                            ) : (
+                                <button className="btn-primary" style={{ width: "100%" }} onClick={confirmDailyPlan}>✅ 确认今日行程并结算</button>
+                            )}
+                        </div>
+
+                        {/* 本月行程总览 */}
+                        <div style={{ padding: "0 16px 4px", fontSize: 12, color: "#9d6db8", fontWeight: 600 }}>📆 本月行程总览</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, padding: "6px 16px 8px" }}>
                             {["一", "二", "三", "四", "五", "六", "日"].map(d => <div key={d} style={{ color: "#b88dc7", fontSize: 11, textAlign: "center" }}>{d}</div>)}
                             {Array.from({ length: 30 }, (_, i) => i + 1).map(d => {
-                                // 优先用记录的真实行程，其次用随机生成
-                                const sch = scheduleMap[d] || generateRandomSchedule(d);
+                                const rec = scheduleMap[d];
                                 const isToday = d === day;
                                 const isPast = d < day;
-                                const isReal = !!scheduleMap[d]; // 有真实记录
+                                // 今天若还没确认，用待安排的 dailyPlan 做预览
+                                const summary = isToday && !rec ? summarizeScheduleEntry(dailyPlan) : summarizeScheduleEntry(rec);
                                 return (
-                                    <div key={d} onClick={() => alert(`第${d}天${isReal ? "（已过）" : "（预定）"}：\n${sch.name}\n素材+${sch.素材} · 人气+${sch.人气}`)}
-                                        style={{ background: isToday ? "#d946a8" : (isPast ? "#e9d5ff" : "#ffffff"), borderRadius: 10, padding: "8px 4px", textAlign: "center", fontSize: 13, color: isToday ? "white" : "#4a1d5a", cursor: "pointer", border: isReal && isPast ? "1px solid #a855f7" : "1px solid rgba(217,70,168,0.1)" }}>
+                                    <div key={d} onClick={() => alert(`第${d}天${isToday ? "（今天）" : isPast ? "（已过）" : "（未来）"}：\n${summary || "未安排"}`)}
+                                        style={{ background: isToday ? "#d946a8" : (isPast ? "#e9d5ff" : "#ffffff"), borderRadius: 10, padding: "6px 4px", textAlign: "center", fontSize: 13, color: isToday ? "white" : "#4a1d5a", cursor: "pointer", border: rec && isPast ? "1px solid #a855f7" : "1px solid rgba(217,70,168,0.1)" }}>
                                         {d}
-                                        <div style={{ fontSize: 6, marginTop: 2, color: isToday ? "#fff" : (isPast ? "#4ade80" : "#b88dc7"), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                            {sch.name.slice(0, 3)}
+                                        <div style={{ fontSize: 6, marginTop: 2, color: isToday ? "#fff" : (isPast ? "#16a34a" : "#b88dc7"), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                            {summary ? summary.slice(0, 4) : ""}
                                         </div>
-                                        {isReal && isPast && <div style={{ fontSize: 5, color: "#4ade80" }}>✓</div>}
+                                        {rec && isPast && <div style={{ fontSize: 5, color: "#16a34a" }}>✓</div>}
                                     </div>
                                 );
                             })}
                         </div>
                         <div style={{ padding: "0 16px 16px", fontSize: 11, color: "#b88dc7", textAlign: "center" }}>
-                            🔴 今天 · 🟩 已过去（✓ 有真实记录） · 点击查看当天行程
+                            🔴 今天 · 🟪 已过去（✓ 已执行） · 点格子看当天安排
                         </div>
                     </div>
                 </div>
@@ -3976,6 +4167,7 @@ function CreateCharacter({ slotId, onComplete, onBack }) {
                             attrs: randomAttrs, money: randomAttrs.金钱值,
                             fandomHeat: 65, antiCount: 30, fanEmotions: initFanEmotions(),
                             activeEvents: [], currentSchedule: generateRandomSchedule(1),
+                            scheduleMap: {}, dailyPlan: { morning: null, noon: null, evening: null },
                             dmReadStatus: {}, dmHistories: {}, coupleExposure: null, socialFeeds: {},
                             paidDmDaily: { lastChatDate: null, messages: {}, thread: [] },
                             companyFavor: 60
