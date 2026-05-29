@@ -216,7 +216,8 @@ function playSFX(key) {
 // ============================================================
 function sanitizeAIText(text, char) {
     if (typeof text !== 'string' || !text) return text;
-    if (!text.includes('主控') && !text.includes('海后值')) return text;
+    const hasEnhypen = /enhypen/i.test(text);
+    if (!text.includes('主控') && !text.includes('海后值') && !hasEnhypen) return text;
     const name = char?.artistName || char?.nickname || '她';
     // 各种"主控"组合都替换为艺名
     let cleaned = text
@@ -229,6 +230,12 @@ function sanitizeAIText(text, char) {
         .replace(/海后值很?高/g, '心太大')
         .replace(/海后值\s*[:：]?\s*\d+/g, '时间管理大师')
         .replace(/海后值/g, '养鱼程度');
+    // ⭐ 兜底：六位大粉不是偶像，AI 偶尔会把他们写成 "ENHYPEN"。
+    // 标签(#ENHYPEN / #WhoIsNext) 直接删除，独立出现的组合名替换成中性的"应援团"
+    cleaned = cleaned
+        .replace(/#\s*enhypen/gi, '')
+        .replace(/#\s*whoisnext/gi, '')
+        .replace(/enhypen/gi, '应援团');
     return cleaned;
 }
 
@@ -677,8 +684,17 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
                 if (result.comments?.length) {
                     danmakuBufferRef.current.push(...result.comments);
                     startDrip();
+                } else if (result?.error) {
+                    // ✅ 服务器/网络错误：放一条占位弹幕，避免永远停在"弹幕加载中…"
+                    danmakuBufferRef.current.push({ user: "💬", text: "（弹幕加载有点慢，稍等一下~）", type: "fan" });
+                    startDrip();
                 }
-            } catch(e) { console.error('[live]批量拉弹幕失败', e); }
+            } catch(e) {
+                console.error('[live]批量拉弹幕失败', e);
+                // ✅ 异常兜底：同样放占位弹幕
+                danmakuBufferRef.current.push({ user: "💬", text: "（弹幕加载有点慢，稍等一下~）", type: "fan" });
+                startDrip();
+            }
         };
         // 开播立刻拉一批
         fetchBatch("开播");
@@ -701,6 +717,14 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
         setLiveActive(true);
         setLivePhase(0);
         danmakuBufferRef.current = [];
+        // ⭐ 立即塞几条进场弹幕，避免开播瞬间一直停在"弹幕加载中…"（AI首批要几秒）
+        const seedName = char?.artistName || char?.nickname || "主播";
+        danmakuBufferRef.current.push(
+            { user: "달려가는중", text: "冲！到了到了～", type: "fan", _priority: true },
+            { user: "想你的粉", text: `${seedName}开播啦！等你好久了😭`, type: "fan", _priority: true },
+            { user: "新粉报道", text: "第一次蹲直播，好紧张", type: "passerby", _priority: true }
+        );
+        startDrip();
         addWorldState(`在${livePlatform}开了直播：${liveTopic.slice(0, 30)}`);
     };
 
@@ -949,7 +973,7 @@ function PostComposerModal({ cfg, onClose, onPublish }) {
 }
 
 // 评论区（点开帖子）
-function CommentSheetModal({ post, cfg, loading, onClose, onLike }) {
+function CommentSheetModal({ post, cfg, loading, onClose, onLike, onRetry }) {
     if (!post) return null;
     const comments = post.comments || [];
     return (
@@ -965,7 +989,12 @@ function CommentSheetModal({ post, cfg, loading, onClose, onLike }) {
                         </div>
                     </div>
                     {loading && <div className="loading-spinner"><div className="spinner"></div><div>加载评论中...</div></div>}
-                    {!loading && comments.length === 0 && <div style={{ color: "#b88dc7", textAlign: "center", padding: 20 }}>还没有评论</div>}
+                    {!loading && comments.length === 0 && (
+                        <div style={{ color: "#b88dc7", textAlign: "center", padding: 20 }}>
+                            <div style={{ marginBottom: 12 }}>评论还没刷出来～</div>
+                            {onRetry && <button className="btn-primary" style={{ padding: "6px 18px", fontSize: 12 }} onClick={onRetry}>🔄 重新加载评论</button>}
+                        </div>
+                    )}
                     {comments.map((c, i) => (
                         <div key={i} className="comment-item">
                             <div className="comment-user" style={{ color: c.type === "blackfan" ? "#f472b6" : c.type === "big_fan" ? "#a855f7" : c.type === "teammate_fan" ? "#a78bfa" : c.type === "water_army" ? "#b88dc7" : "#6b3d7e" }}>
@@ -2626,7 +2655,7 @@ const sendDM = async (fan, text, actionItem) => {
                             <button className={`forum-tab ${forumContext.postTab === "latest" ? "active" : ""}`} onClick={() => setForumContext(prev => ({ ...prev, postTab: "latest" }))}>最新</button>
                         </div>
                         <div style={{ padding: 16, overflowY: "auto" }}>
-                            {(forumContext.posts.length === 0 || forumLoading) && (
+                            {forumLoading && (
                                 <div>
                                     {[1,2,3].map(i => (
                                         <div key={i} style={{ background: "#ffffff", borderRadius: 16, padding: 16, marginBottom: 12, animation: "pulse 1.5s infinite" }}>
@@ -2637,7 +2666,17 @@ const sendDM = async (fan, text, actionItem) => {
                                     <div style={{ color: "#b88dc7", textAlign: "center", fontSize: 11 }}>正在连接 Pann...</div>
                                 </div>
                             )}
-                            {filteredPosts.map((post, i) => {
+                            {!forumLoading && forumContext.posts.length === 0 && (
+                                <div style={{ textAlign: "center", padding: "40px 20px", color: "#b88dc7" }}>
+                                    <div style={{ fontSize: 32, marginBottom: 12 }}>📭</div>
+                                    <div style={{ fontSize: 13, marginBottom: 16 }}>论坛暂时没刷出帖子，可能是网络或服务器繁忙。</div>
+                                    <button className="btn-primary" style={{ padding: "8px 20px", fontSize: 12 }}
+                                        onClick={() => { setForumCache(prev => { const c = { ...prev }; Object.keys(c).filter(k => k.startsWith(forumContext.activePlatform)).forEach(k => delete c[k]); return c; }); loadForum(forumContext.activePlatform); }}>
+                                        🔄 重新加载
+                                    </button>
+                                </div>
+                            )}
+                            {!forumLoading && filteredPosts.map((post, i) => {
                                 // 根据海后值/风险值生成舆论氛围标签
                                 const opinionTag = seaLevel > 60 ? { text: "⚡ 粉圈在讨论", color: "#fb923c" } :
                                     currentRisk >= 5 ? { text: "🔍 有人扒料中", color: "#f472b6" } :
@@ -3382,7 +3421,8 @@ const sendDM = async (fan, text, actionItem) => {
             )}
             {commentSheet && sheetPost && (
                 <CommentSheetModal post={sheetPost} cfg={sheetCfg} loading={commentLoading}
-                    onClose={() => setCommentSheet(null)} onLike={id => toggleLike(commentSheet.feedKey, id)} />
+                    onClose={() => setCommentSheet(null)} onLike={id => toggleLike(commentSheet.feedKey, id)}
+                    onRetry={() => { updatePost(commentSheet.feedKey, sheetPost.id, { comments: null }); openComments(commentSheet.feedKey, { ...sheetPost, comments: null }); }} />
             )}
             {/* 手机操作就地反馈 Toast（不推主线，只显示结果） */}
             {toastMsg && (
