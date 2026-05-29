@@ -2158,8 +2158,10 @@ const sendDM = async (fan, text, actionItem) => {
     // 论坛
     const [forumCache, setForumCache] = React.useState({});
     const loadForum = async (platformId) => {
-        // ⭐ cacheKey 加入 unlocked 数量，避免开局/恋爱后共用同一份缓存
-        const cacheKey = `${platformId}_day${day}_sea${Math.floor(seaLevel/20)}_risk${Math.floor(currentRisk/3)}_unlock${unlocked.length}`;
+        // ⭐ cacheKey 加入 unlocked 数量 + 当前活跃事件，避免开局/恋爱后、以及剧情事件
+        //   推进后仍共用同一份过时缓存（这是"帖子和当前剧情对不上"的另一半原因）。
+        const evtTag = (activeEvents[0]?.name || "none").slice(0, 8);
+        const cacheKey = `${platformId}_day${day}_sea${Math.floor(seaLevel/20)}_risk${Math.floor(currentRisk/3)}_unlock${unlocked.length}_evt${evtTag}`;
         // 先显示缓存内容（如果有）
         if (forumCache[cacheKey]) {
             setForumContext({ posts: forumCache[cacheKey], activePlatform: platformId, selectedPost: null, postTab: "hot" });
@@ -2214,7 +2216,9 @@ const sendDM = async (fan, text, actionItem) => {
         };
         const result = await callEdgeFunction('comments', {
             postTitle: post.title,
-            postContent: post.content || post.title || "",      // ⭐ 完整帖子内容
+            // ⭐ 论坛帖的正文在 preview 字段（楼主内容+楼层），旧代码取 post.content（不存在）
+            //   导致评论只凭一个耸动标题瞎编 → 牛头不对马嘴。现在优先用 preview。
+            postContent: post.preview || post.content || post.title || "",
             postAuthor: post.author || post.submitter || "",    // ⭐ 谁发的
             platformId: forumContext.activePlatform,
             gameContext
@@ -2790,6 +2794,13 @@ const sendDM = async (fan, text, actionItem) => {
                         <div className="modal-header"><h3>🔥 {forumContext.selectedPost.title}</h3><button className="modal-close" onClick={() => setForumContext(prev => ({ ...prev, selectedPost: null }))}>×</button></div>
                         <div style={{ padding: 16, overflowY: "auto" }}>
                             {forumLoading && <div className="loading-spinner"><div className="spinner"></div><div>加载评论中...</div></div>}
+                            {/* ⭐ 楼主正文：后端在 preview 字段返回（楼主内容+楼层），之前从不显示，
+                                导致点进帖子直接是评论、看着很割裂。现在补上正文区。 */}
+                            {(forumContext.selectedPost.preview || forumContext.selectedPost.content) && (
+                                <div style={{ background: "rgba(168,85,247,0.06)", borderRadius: 12, padding: 14, marginBottom: 14, whiteSpace: "pre-wrap", color: "#4a1d5a", fontSize: 13, lineHeight: 1.7 }}>
+                                    {forumContext.selectedPost.preview || forumContext.selectedPost.content}
+                                </div>
+                            )}
                             {forumContext.selectedPost.hot_comment && (
                                 <div style={{ background: "rgba(250,204,21,0.1)", borderRadius: 12, padding: 12, marginBottom: 12 }}>
                                     <span style={{ color: "#a855f7", fontSize: 11 }}>🏆 最高赞 · {forumContext.selectedPost.hot_comment.user}</span>
