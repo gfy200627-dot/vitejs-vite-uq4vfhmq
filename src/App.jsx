@@ -192,6 +192,54 @@ const INIT_CHOICES = [
     "先不回复，截了图，默默观察他下一步"
 ];
 
+// ============================================================
+// 【光夜变奏】平行世界线 + 心动邂逅地点
+// 仅常驻主世界(main)可玩；其余为预留世界线，切换只改变全局主题并展示"序章筹备"。
+// 邂逅始终通过 continueStory 接入主线引擎，绝不新开一套逻辑。
+// ============================================================
+const WORLDS = [
+    { id: "main", code: "PRIME", name: "常驻主世界", unlocked: true,
+      tagline: "镁光灯下的娱乐圈修罗场",
+      desc: "顶流爱豆的双面人生。每一次营业与暗涌，都会把这条世界线推向新的分歧。",
+      cardLabel: "主线 · 光夜变奏" },
+    { id: "vampire", code: "SANGUIS", name: "赤红契约", unlocked: false,
+      tagline: "古堡 · 暗夜 · 血族博弈",
+      desc: "月色浸透的古堡长廊，甜腥的猎杀与誓约。血族平行宇宙 · 序章筹备中。",
+      cardLabel: "血族 · 赤红契约" },
+    { id: "cyber", code: "MACHINA", name: "齿轮宿命", unlocked: false,
+      tagline: "霓虹夜雨 · 仿生之心",
+      desc: "机械与人心的边界正在融化。赛博平行宇宙 · 序章筹备中。",
+      cardLabel: "赛博 · 齿轮宿命" },
+    { id: "future", code: "TO·BE", name: "未完待续", unlocked: false,
+      tagline: "下一条世界线，正在观测中",
+      desc: "更多平行时空即将展开，敬请期待。",
+      cardLabel: "？？？" }
+];
+function getWorld(id) { return WORLDS.find(w => w.id === id) || WORLDS[0]; }
+
+const ENCOUNTER_LOCATIONS = {
+    main: [
+        { emoji: "🥤", title: "公司茶水间", sub: "无人的午后，只剩咖啡机的嗡鸣" },
+        { emoji: "🏪", title: "深夜便利店", sub: "收工后偶遇，关东煮冒着热气" },
+        { emoji: "🚪", title: "练习室走廊", sub: "汗味与镜面，深夜灯光昏黄" },
+        { emoji: "🌃", title: "公司天台", sub: "城市夜景铺开，风把话吹散" },
+        { emoji: "💄", title: "后台化妆间", sub: "散场后的安静，镜前只剩你们" },
+        { emoji: "🚗", title: "回程的车里", sub: "保姆车最后一排，肩靠着肩" }
+    ],
+    vampire: [
+        { emoji: "🕯️", title: "古堡长廊", sub: "烛影摇曳，脚步声回荡在石壁间" },
+        { emoji: "⚰️", title: "地窖一角", sub: "血色微光，禁忌在阴影里滋长" },
+        { emoji: "🌙", title: "月光庭院", sub: "夜露与蔷薇，月色浸透衣袖" },
+        { emoji: "🍷", title: "血色宴会厅", sub: "水晶灯下的博弈，杯中泛着暗红" }
+    ],
+    cyber: [
+        { emoji: "🌧️", title: "霓虹雨巷", sub: "全息广告在积水里破碎" },
+        { emoji: "🔧", title: "仿生维修舱", sub: "冷光与线缆，机械之心在跳" },
+        { emoji: "🚝", title: "悬浮列车", sub: "穿过夜城，车窗映出两张脸" }
+    ]
+};
+function getEncounterLocations(worldId) { return ENCOUNTER_LOCATIONS[worldId] || ENCOUNTER_LOCATIONS.main; }
+
 function initFanEmotions() {
     const emotions = {};
     FANS.forEach(fan => { emotions[fan.id] = { affection: 30, trust: 40, obsession: 20, jealousy: 25, recentInteractions: [] }; });
@@ -1253,6 +1301,11 @@ function GameApp({ slotId, initialData, onBack }) {
     const [teammates] = React.useState(initialData.teammates);
     // 把 char 挂到 window 上，供 callEdgeFunction 兜底净化器使用
     React.useEffect(() => { window._ehpCurrentChar = char; }, [char]);
+    // 【光夜变奏】当前世界线 → <html data-world>，驱动全局换肤；离开游戏时复位为主世界
+    React.useEffect(() => {
+        document.documentElement.setAttribute('data-world', currentWorld);
+        return () => { document.documentElement.setAttribute('data-world', 'main'); };
+    }, [currentWorld]);
     const [day, setDay] = React.useState(initialData.day || 1);
     
     // 大粉系统
@@ -1313,7 +1366,7 @@ function GameApp({ slotId, initialData, onBack }) {
     const kakaoEndRef = React.useRef(null);
     
     // UI 状态
-    const [activeTab, setActiveTab] = React.useState("story");
+    const [activeTab, setActiveTab] = React.useState("home");
     const [showSidebar, setShowSidebar] = React.useState(false);
     const [showPhone, setShowPhone] = React.useState(false);
     const [activeModal, setActiveModal] = React.useState(null);
@@ -1321,6 +1374,13 @@ function GameApp({ slotId, initialData, onBack }) {
     const [showFanDetail, setShowFanDetail] = React.useState(null);
     const [showGift, setShowGift] = React.useState(false);
     const [showRelationGraph, setShowRelationGraph] = React.useState(false);
+    // 【光夜变奏】平行世界 + 跃迁过场 + 心动邂逅 UI 状态（纯前端，不影响原有存档结构）
+    const [currentWorld, setCurrentWorld] = React.useState(initialData.currentWorld || "main");
+    const [isWarping, setIsWarping] = React.useState(false);
+    const [warpTarget, setWarpTarget] = React.useState(null);
+    const [showWorldMap, setShowWorldMap] = React.useState(false);
+    const [showEncounter, setShowEncounter] = React.useState(false);
+    const [encounterFan, setEncounterFan] = React.useState(null);
     const [worldState, setWorldState] = React.useState([]);
     const [loading, setLoading] = React.useState(false);
     const [forumLoading, setForumLoading] = React.useState(false); // 论坛/帖子详情独立加载态，不影响主线
@@ -1545,7 +1605,8 @@ function GameApp({ slotId, initialData, onBack }) {
             char, day, hearts, seaLevel, unlocked, currentStory, currentChoices, currentRisk, suspicion,
             history, storySummary, schedules, attrs, money, teammates, fandomHeat, antiCount, fanEmotions,
             activeEvents, currentSchedule, dmReadStatus, dmHistories, coupleExposure, paidDmDaily,
-            companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan
+            companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan,
+            currentWorld
         };
         const r = saveGameToSlot(slotId, saveData);
         if (r && r.ok === false) {
@@ -1560,7 +1621,7 @@ function GameApp({ slotId, initialData, onBack }) {
         touchActiveSlot(slotId);   // 刷新“最近在玩”时间戳，支撑被杀后 30 分钟内自动续档
     }, [day, hearts, seaLevel, currentStory, currentChoices, currentRisk, suspicion, history, storySummary, schedules,
         attrs, money, teammates, fandomHeat, antiCount, fanEmotions, activeEvents, currentSchedule, dmReadStatus, dmHistories,
-        coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan]);
+        coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan, currentWorld]);
     
     // 每日推进
     React.useEffect(() => {
@@ -1922,6 +1983,26 @@ function GameApp({ slotId, initialData, onBack }) {
             setCustomText("");
             setCustomMode(false);
         }
+    };
+    // 【光夜变奏】跃迁到某条世界线：1.5s 时空扭曲过场，动画中段(~0.75s)瞬时切换全局主题
+    const switchWorld = (worldId) => {
+        if (isWarping) return;
+        setShowWorldMap(false);
+        setWarpTarget(getWorld(worldId));
+        setIsWarping(true);
+        vibrate(VIBE.unlock);
+        setTimeout(() => { setCurrentWorld(worldId); }, 750);
+        setTimeout(() => { setIsWarping(false); setWarpTarget(null); }, 1500);
+    };
+    // 【心动邂逅】选定男主 + 地点 → 拼接高暧昧提示词，交给主线剧情引擎（与选项/自定义同一入口）
+    const startEncounter = (fan, loc) => {
+        const place = loc.sub ? `${loc.title}，${loc.sub}` : loc.title;
+        const prompt = `【心动邂逅】在${place}里，我偶然和 @${fan.name} 独处了……`;
+        setShowEncounter(false);
+        setEncounterFan(null);
+        setActiveTab("story");
+        vibrate(VIBE.heartUp);
+        continueStory(prompt);
     };
     // ========== 手机功能函数 ==========
     
@@ -2454,6 +2535,82 @@ const sendDM = async (fan, text, actionItem) => {
     );
     // ========== 渲染主内容 ==========
     const renderContent = () => {
+        // 首页：参考乙女游戏的清爽入口层，保留主线、活动、偶遇、手机系统的关系
+        if (activeTab === "home") {
+            const activityTitle = currentEvent?.name || "新活动筹备中";
+            return (
+                <div className="ln-home">
+                    <div className="ln-sky" aria-hidden="true">
+                        <div className="ln-cloud ln-cloud-a" />
+                        <div className="ln-cloud ln-cloud-b" />
+                        <div className="ln-tower" />
+                    </div>
+                    <div className="ln-home-top">
+                        <div>
+                            <div className="ln-kicker">Parallel Heartline</div>
+                            <h1>{char?.artistName || "晨晨"}</h1>
+                        </div>
+                        <div className="ln-home-actions">
+                            <button className="ln-round-btn glow" onClick={() => setShowWorldMap(true)} aria-label="观测次元">🌌</button>
+                            <button className="ln-round-btn" onClick={() => setActiveTab("settings")} aria-label="状态">i</button>
+                        </div>
+                    </div>
+
+                    <div className="ln-main-card" onClick={() => setActiveTab("story")}>
+                        <div>
+                            <div className="ln-card-label">{getWorld(currentWorld).cardLabel}</div>
+                            <h2>{getWorld(currentWorld).name}</h2>
+                            <p>{getWorld(currentWorld).desc}</p>
+                        </div>
+                        <span className="ln-arrow">›</span>
+                    </div>
+
+                    <div className="ln-side-menu" aria-label="功能入口">
+                        <button onClick={() => setActiveTab("activity")}>
+                            <span>活动</span>
+                            <small>{activityTitle}</small>
+                        </button>
+                        <button onClick={() => setActiveTab("relation")}>
+                            <span>偶遇</span>
+                            <small>心动邂逅 / 关系图谱</small>
+                        </button>
+                    </div>
+
+                    <div className="ln-bottom-actions">
+                        <button onClick={() => setActiveTab("phone")}>
+                            <span>手机</span>
+                            <small>SNS / 私聊 / 日程</small>
+                        </button>
+                        <button onClick={() => setActiveTab("settings")}>
+                            <span>状态</span>
+                            <small>属性 / 存档 / 系统</small>
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        if (activeTab === "activity") {
+            return (
+                <div className="ln-activity">
+                    <div className="ln-section-title">
+                        <span>活动</span>
+                        <button onClick={() => setActiveTab("home")}>返回首页</button>
+                    </div>
+                    <div className="ln-placeholder-event">
+                        <div className="ln-event-badge">Coming Soon</div>
+                        <h2>{currentEvent?.name || "限时活动预留位"}</h2>
+                        <p>这里以后可以放你想追加的活动。它和主线平行世界分开管理，不会挤占“光夜变奏”的章节结构。</p>
+                        {currentEvent ? (
+                            <button className="btn-primary" onClick={() => setActiveTab("story")}>前往当前事件</button>
+                        ) : (
+                            <button className="btn-secondary" disabled>活动尚未开放</button>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
         // 剧情页
         if (activeTab === "story") {
             return (
@@ -2590,6 +2747,15 @@ const sendDM = async (fan, text, actionItem) => {
         if (activeTab === "relation") {
             return (
                 <div style={{ padding: 16 }}>
+                    <div className="ln-main-card" style={{ minHeight: 0, marginTop: 0, marginBottom: 16, padding: 18 }}
+                        onClick={() => { setEncounterFan(null); setShowEncounter(true); }}>
+                        <div>
+                            <div className="ln-card-label">心动邂逅</div>
+                            <h2 style={{ fontSize: 20 }}>偶遇 · {getWorld(currentWorld).name}</h2>
+                            <p>挑一位大粉，选一个只属于你们的角落，触发一场电影感的独处。</p>
+                        </div>
+                        <span className="ln-arrow">›</span>
+                    </div>
                     <RelationGraph fans={FANS} hearts={hearts} onSelectFan={(fan) => setShowFanDetail(fan)} />
                     <div style={{ fontSize: 11, color: "#b88dc7", textAlign: "center", marginTop: 8 }}>
                         点击头像查看大粉详情（含吃醋度、出名事件）
@@ -2644,7 +2810,7 @@ const sendDM = async (fan, text, actionItem) => {
                 <div className="phone-panel" style={{ position: "relative", bottom: "auto", maxHeight: "calc(100vh - 120px)" }}>
                     <div className="phone-header">
                         <h3>📱 {char?.artistName || "晨晨"}Phone</h3>
-                        <button className="phone-close" onClick={() => setActiveTab("story")}>×</button>
+                        <button className="phone-close" onClick={() => setActiveTab("home")}>×</button>
                     </div>
                     <div className="phone-apps">
                         <div className="phone-app" onClick={() => setActiveModal("weverse")}><div className="phone-app-icon">🌐</div><div className="phone-app-name">Weverse</div></div>
@@ -3700,6 +3866,100 @@ const sendDM = async (fan, text, actionItem) => {
             {/* 危机模式视觉叠加层 */}
             {currentRisk >= 8 && <div className="crisis-mode" aria-hidden="true" />}
             {renderModal()}
+            {/* 【光夜变奏】时空扭曲跃迁过场（1.5s） */}
+            {isWarping && (
+                <div className="warp-overlay" aria-hidden="true">
+                    <div className="warp-ring" /><div className="warp-ring r2" /><div className="warp-ring r3" />
+                    <div className="warp-streaks">
+                        {Array.from({ length: 12 }).map((_, i) => (
+                            <div key={i} className="warp-streak" style={{ transform: `translate(-50%,0) rotate(${i * 30}deg)`, animationDelay: `${i * 0.02}s` }} />
+                        ))}
+                    </div>
+                    <div className="warp-core" />
+                    {warpTarget && (
+                        <div className="warp-title">
+                            <div className="wt-kicker">{warpTarget.code}</div>
+                            <div className="wt-name">{warpTarget.name}</div>
+                        </div>
+                    )}
+                </div>
+            )}
+            {/* 【观测次元】平行世界切换 */}
+            {showWorldMap && (
+                <div className="modal-overlay" onClick={() => setShowWorldMap(false)}>
+                    <div className="modal-content modal-anim" onClick={e => e.stopPropagation()}>
+                        <div className="modal-header">
+                            <h3>🌌 观测次元</h3>
+                            <button className="modal-close" onClick={() => setShowWorldMap(false)}>×</button>
+                        </div>
+                        <div className="worldmap-list">
+                            {WORLDS.map(w => (
+                                <div key={w.id}
+                                    className={`world-card w-${w.id} ${currentWorld === w.id ? "active" : ""} ${w.unlocked ? "" : "locked"}`}
+                                    onClick={() => {
+                                        if (w.unlocked) { switchWorld(w.id); }
+                                        else { vibrate(VIBE.riskUp); setToastMsg(`「${w.name}」序章筹备中，敬请期待`); setTimeout(() => setToastMsg(""), 2200); }
+                                    }}>
+                                    <div className="wc-glow" />
+                                    <span className={`wc-status ${w.unlocked ? "on" : "off"}`}>{w.unlocked ? "已开启" : "筹备中"}</span>
+                                    <div className="wc-code">{w.code}</div>
+                                    <div className="wc-name">{w.name}</div>
+                                    <div className="wc-desc">{w.tagline} · {w.desc}</div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* 【心动邂逅】偶遇系统 */}
+            {showEncounter && (
+                <div className="modal-overlay" onClick={() => { setShowEncounter(false); setEncounterFan(null); }}>
+                    <div className="modal-content modal-anim" onClick={e => e.stopPropagation()}>
+                        <div className="modal-header">
+                            <h3>💗 心动邂逅 · {getWorld(currentWorld).name}</h3>
+                            <button className="modal-close" onClick={() => { setShowEncounter(false); setEncounterFan(null); }}>×</button>
+                        </div>
+                        {!encounterFan ? (
+                            <>
+                                <div className="encounter-intro">挑一位大粉，触发一场只属于你们的独处。</div>
+                                <div className="encounter-grid">
+                                    {FANS.map(fan => (
+                                        <div key={fan.id} className="enc-fan" onClick={() => setEncounterFan(fan)}>
+                                            <div className="enc-emoji" style={{ boxShadow: `0 0 20px -8px ${fan.color}` }}>{fan.emoji}</div>
+                                            <div className="enc-name">{fan.name}</div>
+                                            <div className="enc-type">{fan.type}</div>
+                                            <div className="enc-heart">
+                                                <span>💕</span>
+                                                <div className="enc-heart-bar"><div style={{ width: `${hearts[fan.id]}%`, height: "100%", background: fan.color }} /></div>
+                                                <span>{hearts[fan.id]}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <button className="enc-back" onClick={() => setEncounterFan(null)}>‹ 换一位</button>
+                                <div className="enc-chosen-fan">
+                                    <span className="ecf-emoji">{encounterFan.emoji}</span>
+                                    <span className="ecf-name">和 {encounterFan.name} 在哪里相遇？</span>
+                                </div>
+                                <div className="enc-locations">
+                                    {getEncounterLocations(currentWorld).map((loc, i) => (
+                                        <div key={i} className="enc-loc" onClick={() => startEncounter(encounterFan, loc)}>
+                                            <span className="enc-loc-emoji">{loc.emoji}</span>
+                                            <div>
+                                                <div className="enc-loc-title">{loc.title}</div>
+                                                <div className="enc-loc-sub">{loc.sub}</div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
             {postComposer && (
                 <PostComposerModal cfg={composerCfg} onClose={() => setPostComposer(null)}
                     onPublish={(text, media) => publishPost(postComposer.platformKey, text, media)} />
@@ -3739,24 +3999,41 @@ const sendDM = async (fan, text, actionItem) => {
                 {riskText}：{currentRisk >= 8 ? "狗仔已盯上你" : currentRisk >= 6 ? "小号议论纷纷" : currentRisk >= 4 ? "圈内有些风声" : currentRisk >= 2 ? "略有蛛丝马迹" : "一切如常"}
             </div>
             
+            {/* 【光夜变奏】非主世界预览提示（此时剧情与存档仍锚定常驻主世界，仅视觉换肤预览） */}
+            {currentWorld !== "main" && (
+                <div style={{ margin: "0 16px 10px", padding: "10px 14px", borderRadius: 14,
+                    border: "1px solid var(--gold-line)", background: "var(--glass)",
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                    <span style={{ fontSize: 11, color: "var(--gold)", lineHeight: 1.5 }}>
+                        🌌 当前观测：{getWorld(currentWorld).name} · 序章筹备中（剧情与存档仍在常驻主世界）
+                    </span>
+                    <button className="btn-secondary" style={{ flex: "0 0 auto", padding: "6px 12px" }}
+                        onClick={() => switchWorld("main")}>返回主世界</button>
+                </div>
+            )}
             {/* 主内容区 */}
             {renderContent()}
             
             {/* 底部 Tab 栏 */}
             <div className="bottom-tabs">
+                <button className={`tab-btn ${activeTab === "home" ? "active" : ""}`} onClick={() => setActiveTab("home")}>
+                    <span>⌂</span><span>首页</span>
+                </button>
                 <button className={`tab-btn ${activeTab === "story" ? "active" : ""}`} onClick={() => setActiveTab("story")}>
-                    <span>📖</span><span>剧情</span>
+                    <span>✦</span><span>主线</span>
                 </button>
                 <button className={`tab-btn ${activeTab === "relation" ? "active" : ""}`} onClick={() => setActiveTab("relation")}>
-                    <span>🕸️</span><span>关系</span>
+                    <span>♡</span><span>偶遇</span>
                 </button>
                 <button className={`tab-btn ${activeTab === "phone" ? "active" : ""}`} onClick={() => setActiveTab("phone")}>
                     <span>📱</span><span>手机</span>
                 </button>
                 <button className={`tab-btn ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>
-                    <span>⚙️</span><span>设置</span>
+                    <span>≡</span><span>状态</span>
                 </button>
             </div>
+            {/* 【观测次元】跃迁悬浮按钮（Dock 右上方） */}
+            <button className="dock-warp" onClick={() => setShowWorldMap(true)} aria-label="观测次元 · 跃迁">🌌</button>
         </div>
     );
 }
