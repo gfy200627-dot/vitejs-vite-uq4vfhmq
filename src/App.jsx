@@ -1301,11 +1301,6 @@ function GameApp({ slotId, initialData, onBack }) {
     const [teammates] = React.useState(initialData.teammates);
     // 把 char 挂到 window 上，供 callEdgeFunction 兜底净化器使用
     React.useEffect(() => { window._ehpCurrentChar = char; }, [char]);
-    // 【光夜变奏】当前世界线 → <html data-world>，驱动全局换肤；离开游戏时复位为主世界
-    React.useEffect(() => {
-        document.documentElement.setAttribute('data-world', currentWorld);
-        return () => { document.documentElement.setAttribute('data-world', 'main'); };
-    }, [currentWorld]);
     const [day, setDay] = React.useState(initialData.day || 1);
     
     // 大粉系统
@@ -1381,6 +1376,11 @@ function GameApp({ slotId, initialData, onBack }) {
     const [showWorldMap, setShowWorldMap] = React.useState(false);
     const [showEncounter, setShowEncounter] = React.useState(false);
     const [encounterFan, setEncounterFan] = React.useState(null);
+    // 【光夜变奏】当前世界线 → <html data-world>，驱动全局换肤；离开游戏时复位为主世界
+    React.useEffect(() => {
+        document.documentElement.setAttribute('data-world', currentWorld);
+        return () => { document.documentElement.setAttribute('data-world', 'main'); };
+    }, [currentWorld]);
     const [worldState, setWorldState] = React.useState([]);
     const [loading, setLoading] = React.useState(false);
     const [forumLoading, setForumLoading] = React.useState(false); // 论坛/帖子详情独立加载态，不影响主线
@@ -4636,3 +4636,4 @@ function App() {
 // 渲染
 
 export default App;
+
