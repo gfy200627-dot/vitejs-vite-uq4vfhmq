@@ -1,5 +1,4 @@
-/* =============================================================================
- * EHP之姐夫大作战 — Service Worker
+* EHP之姐夫大作战 — Service Worker
  *
  * 缓存策略（专门为 Vite 单包 + Supabase 后端设计，避免“更新了手机还是旧的”）：
  *   1. 导航请求（HTML）        → network-first：联网时永远取最新 index.html，
@@ -13,7 +12,7 @@
  *   配合页面侧 controllerchange→reload，更新会在下次打开时自动生效。
  * ========================================================================== */
 
-const CACHE_VERSION = 'ehp-v18-2026-05-29-01'; // ← 每次发版改这里
+const CACHE_VERSION = 'ehp-v19-2026-07-08-01'; // ← 每次发版改这里
 const CACHE_NAME = `ehp-cache-${CACHE_VERSION}`;
 const PREFIX = 'ehp-cache-';
 
