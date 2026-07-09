@@ -133,18 +133,95 @@ const KAKAO_ACTIONS = [
 ];
 
 const SHOP_ITEMS = [
-    { id: "luxury_bag", name: "奢侈品包", price: 50, effect: { fashion: 5, beauty: 3 }, desc: "时尚+5 颜值+3" },
+    { id: "luxury_bag", name: "奢侈品包", price: 50, effect: { fashion: 5 }, desc: "时尚+5" },
     { id: "dinner", name: "请粉丝吃饭", price: 20, effect: { popularity: 5 }, desc: "人气+5" },
-    { id: "gym", name: "私教健身课", price: 15, effect: { beauty: 5 }, desc: "颜值+5" },
-    { id: "clothes", name: "情侣款衣服", price: 30, effect: { risk: 2, heart: 5 }, desc: "风险+2 心动+5" }
+    // 颜值除整容外不可提升：长期坚持美容仅 +1~2
+    { id: "beauty", name: "长期美容护理", price: 15, effect: { beautify: 1 }, desc: "长期坚持美容 · 颜值+1" },
+    { id: "surgery", name: "医美整容", price: 80, effect: { beautify: 2 }, desc: "整容 · 颜值+2" },
+    { id: "clothes", name: "情侣款衣服", price: 30, effect: { risk: 8, heart: 3 }, desc: "风险+8% 好感+3" }
 ];
 
 const GIFT_ITEMS = [
-    { id: "rose", name: "🌹 红玫瑰", price: 5, heartDelta: 3, emotionDelta: { affection: 2, jealousy: 1 } },
-    { id: "perfume", name: "💝 限量香水", price: 15, heartDelta: 8, emotionDelta: { affection: 5, obsession: 3 } },
-    { id: "bracelet", name: "💫 情侣手链", price: 25, heartDelta: 12, emotionDelta: { affection: 8, obsession: 5, jealousy: 3 } },
-    { id: "letter", name: "✉️ 手写信", price: 3, heartDelta: 5, emotionDelta: { trust: 5, affection: 3 } }
+    { id: "rose", name: "🌹 红玫瑰", price: 5, heartDelta: 3, emotionDelta: { trust: 1 } },
+    { id: "perfume", name: "💝 限量香水", price: 15, heartDelta: 4, emotionDelta: { trust: 2 } },
+    { id: "bracelet", name: "💫 情侣手链", price: 25, heartDelta: 5, emotionDelta: { trust: 3 } },
+    { id: "letter", name: "✉️ 手写信", price: 3, heartDelta: 3, emotionDelta: { trust: 5 } }
 ];
+
+// ============================================================
+// 【结局系统】共 16 种：6 单人HE + 3 公共 + 3 BE + 2 OE + 2 TE(隐藏)
+// 每个结局：id / 类型 / 标题 / 成就 / 结局正文 / cond(state)=>bool
+// cond 收到的 state 含：hearts(好感), trust, jealousy(派生), attrs, day,
+//   currentRisk(%), fandomHeat, antiCount(%), unlockedCount, endingsUnlocked, everBE, maxHeart, avgHeart 等
+// ============================================================
+function heartsAllGte(hearts, n) { return Object.values(hearts).every(v => v >= n); }
+function trustAllGte(trustMap, n) { return Object.values(trustMap).every(v => (v ?? 0) >= n); }
+
+const ENDINGS = [
+  // ---- 单人 HE ----
+  { id: "he_wonjeong", type: "HE", title: "梁祯元 ·《我与我周旋久》", achievement: "夜航船",
+    cond: s => s.hearts.wonjeong >= 90 && s.trust.wonjeong >= 80 && s.attrs.人气值 >= 80 && s.attrs.国民度 >= 75 && s.attrs.时尚度 >= 70,
+    text: `台上与台下，到底隔着多远。\n梁祯元曾经以为，那是一生都无法跨越的距离。他站在人群里，看过你无数次谢幕，也曾隔着屏幕为你的每一次回归争得面红耳赤。如今，他终于走到了你的身边。\n从前写在评论区里的每一句建议，如今都落成企划案里密密麻麻的批注；从前只能仰望的舞台，如今成了你们共同完成的作品。\n你靠在沙发上刷手机，忽然笑出了声——粉丝论坛热帖《关于梁祯元最近怎么不骂人了这件事》。你把手机递给他。他扫了一眼，耳尖泛红，却还是嘴硬："……闭嘴是不可能闭嘴的。第二套造型还是不好看。Ending 镜头应该再多给你两秒。"\n你伸手捏了捏他的脸："你到底是我男朋友，还是我粉丝？"\n"先是你的粉丝。然后，才成为了你的恋人。所以这两件事，我一件都不会放弃。"` },
+  { id: "he_jongseong", type: "HE", title: "朴综星 ·《黄金时代》", achievement: "金钱、欲望、黄金般的爱意，全都倾泄于你",
+    cond: s => s.hearts.jongseong >= 90 && s.trust.jongseong >= 85 && s.attrs.金钱值 >= 90 && s.attrs.时尚度 >= 80 && s.attrs.国民度 >= 80,
+    text: `朴综星给你买了一座岛。\n他把产权证书递给你，表情一如既往的从容："你不是说想找个谁也找不到你的地方吗？"你打开证书，上面写的是你的名字。\n"朴综星……你是不是疯了？"\n他笑了，揉你的头发："没疯。就是想让你知道——你可以靠自己的本事站在山顶，但要是哪天累了，我这里永远有个地方，只属于你。"\n那一天他二十来岁，在他一生的黄金时代，他有好多奢望。想爱，想吃，还想在一瞬间变成天上半明半暗的云，轻轻地飘在你的身后，做一个用钱和心为你筑成的避风港。` },
+  { id: "he_jaeyun", type: "HE", title: "沈载伦 ·《姐夫转正指南》", achievement: "一只特立独行的狗",
+    cond: s => s.hearts.jaeyun >= 92 && s.trust.jaeyun >= 75 && s.currentRisk < 55 && s.fandomHeat >= 80 && s.attrs.eq >= 70,
+    text: `沈载伦的姐夫病终于治好了——因为转正了。\n他注销了那个犯姐夫瘾的 ID，"悄咪咪"把剩下账号的简介改成："正牌姐夫，谢绝代餐。"\n你们官宣那天，粉圈炸了。「姐夫你别这样」投稿：沈载伦你小子是真姐夫啊？？？他窝在你旁边一条条翻评论，看到骂他的就哼哼唧唧，看到祝福的就截图保存。你踢他一脚："你能不能别看了？"\n他把手机一扔，翻身抱住你："不看就不看。我有真人，谁还看评论啊。"` },
+  { id: "he_sunghoon", type: "HE", title: "朴成训 ·《慢热终章》", achievement: "我在等风也等你",
+    cond: s => s.hearts.sunghoon >= 88 && s.trust.sunghoon >= 90 && s.attrs.国民度 >= 70 && s.fandomHeat > 80 && !s.otherHighAmbiguity("sunghoon"),
+    text: `朴成训已经很久没有焦虑了。\n他打字慢，每次吵架都落下风，只能悄悄在小号上写满忧郁。透过镜头，他无法窥见真实的你；绕过镜头，真实的你让他患得患失。但最后，你慢慢贴近他的心，一次次告诉他：我不会走。\n你们公开时，他没有发长文，只发了一张图——他拍的第一张你的舞台照，和一张摆在花束旁的戒指盒照片拼在一起。配文只有三个字："从开始。"` },
+  { id: "he_sunoo", type: "HE", title: "金善禹 ·《如初见》", achievement: "枕草子",
+    cond: s => s.hearts.sunoo >= 90 && s.trust.sunoo >= 80 && s.attrs.国民度 >= 85 && s.attrs.时尚度 >= 75 && s.attrs.eq >= 85,
+    text: `你们没有官宣。\n只是 INS 上那个搬运博的运营者，某天新增了一串日期。粉丝以为是他的运营年限。只有你知道——那是他认识你的年份，到现在。\n他朋友打电话来问：你们不公开？他开着免提，手里剥着橘子，语气很平："她站在台上发光的时候，所有人都在看。我站在台下看，跟站在家里看，有什么区别？"\n你踢了他一脚。他笑着把橘子递到你嘴边。全世界不需要知道你属于他，全世界只需要知道他属于你，这就够了。` },
+  { id: "he_riki", type: "HE", title: "西村力 ·《刀子嘴豆腐心的末日》", achievement: "月曜日",
+    cond: s => s.hearts.riki >= 90 && s.trust.riki >= 70 && s.attrs.人气值 >= 80,
+    text: `西村力变了。\n他大号还在骂人——骂公司、骂黑粉、骂对家粉，嘴毒得一如既往。但再没对你说过一句重话。粉丝问他："刀哥现在怎么不骂姐了？是不是不爱了？"\n他思索片刻，然后说："爱啊。就是……不想让她再听那些难听的话了。我以前用骂人表达关心，后来发现，她配得上更好的爱法。"\n你回他："刀哥，你正常点。"他秒回："你再叫我刀哥我现在就去你宿舍楼下骂你。"\n还是这样的他最对味。` },
+  // ---- 公共结局 ----
+  { id: "co_haihou_a", type: "公共", title: "海后 ·《你们都是我的翅膀》", achievement: "粉圈历史第一人",
+    cond: s => s.unlockedCount === 6 && heartsAllGte(s.hearts, 85) && trustAllGte(s.trust, 75) && s.currentRisk < 40,
+    text: `六个人都知道了彼此的存在，但他们选择……共存。\n梁祯元第一个发现，把所有证据甩在桌上："你自己说。"你只能全招了。全场沉默。朴综星先开口："……所以呢？"金善禹笑了："那怎么办？又不是假的。"西村力靠在墙角："……那就这样吧。"\n"我们认识的她，本来就是这样的。她谁都喜欢，谁都不想伤害。既然分不开，那就……一起守着她吧。"\n你从顶流爱豆变成了拥有六人骑士的女王。粉丝锐评：这不是海后，这是女帝。` },
+  { id: "co_haihou_c", type: "公共", title: "海后 ·《最后的派对》", achievement: "风暴眼",
+    cond: s => s.unlockedCount === 6 && heartsAllGte(s.hearts, 80) && s.currentRisk >= 65,
+    text: `完蛋了，全都暴露了——私生锤、姐夫站十连投、队友粉狂欢。粉圈炸了，热搜前十挂了六个。公司连夜开会。\n你坐在宿舍里，手机在震动，屏幕上六个人的消息在轮流弹。暴风雨中心。危机是他们留下的唯一证据。` },
+  { id: "co_solo", type: "公共", title: "《独美，勿扰》", achievement: "顶流女王，无冕之皇",
+    cond: s => Object.values(s.hearts).every(v => v <= 50) && s.attrs.人气值 >= 90 && s.attrs.国民度 >= 85 && s.fandomHeat > 90,
+    text: `你把所有心思都放在了事业上。没有攻略任何人，没有暧昧，没有私联。你只专注舞台、音乐、作品。你的专辑横扫各大榜单，演唱会一票难求，代言接到手软。\n你站在万人演唱会的舞台上，灯光照亮你一个人。你对着台下说："谢谢你们。我一直都是一个人，但我从来不孤独。"全场尖叫。\n你把手机扣下，对着化妆镜笑了一下。很好。你拥有了全世界。` },
+  // ---- BE ----
+  { id: "be_trust", type: "BE", title: "《信任崩塌》", achievement: "得不到就一起毁灭",
+    cond: s => s.someFan(f => s.hearts[f] < 90 && s.trust[f] < 40 && s.jealousy[f] >= 110),
+    text: `某位男主在极度吃醋和极度不信任下，做出了不可挽回的事——公开所有私联记录、放出聊天截图、把一切摊在阳光下。你被全网审判，从顶流跌入深渊。他毁了你们所有，因为他觉得，得不到就一起毁灭。` },
+  { id: "be_bye", type: "BE", title: "《姐，再见》", achievement: "彻底归零",
+    cond: s => s.currentRisk >= 90 && s.antiCount >= 50 && s.fandomHeat < 30,
+    text: `你失去了粉丝，也失去了大粉。六个人陆续离开，不是因为不爱，是因为你的选择和操作让他们觉得——"她好像不是我们认识的那个她了。"\n你坐在空荡荡的宿舍里，手机上"姐夫你别这样"挂着的还是你的锤。没有行程，没有通告，没有粉丝。六个人的 ID 全部停更。你一个人，彻底归零。` },
+  { id: "be_confess", type: "BE", title: "《自毁式告白》", achievement: "他的爱烧了自己也烧了你",
+    cond: s => s.someFan(f => s.hearts[f] >= 90 && s.jealousy[f] >= 100) && s.currentRisk >= 70,
+    text: `他选择在直播中自爆："我喜欢她，六年了。她不要我，那我就让所有人都知道。"\n你被拖下水。他的爱太炽热，烧了自己，也烧了你。你被迫回应，被迫承认，被迫失去一切。他哭着说对不起，但已经来不及了。` },
+  // ---- OE ----
+  { id: "oe_withdraw", type: "OE", title: "《戒断反应》", achievement: "未完待续",
+    cond: s => Object.values(s.hearts).every(v => v >= 60 && v <= 80) && s.unlockedCount >= 2,
+    text: `你决定停止私联，专心事业。六个人……没有挽留。\n结局未完待续。你走不掉的。他们也走不掉。` },
+  { id: "oe_parallel", type: "OE", title: "《平行时空》", achievement: "把答案留给了想象",
+    cond: s => s.attrs.人气值 >= 88 && Object.values(s.hearts).every(v => v >= 80 && v <= 85),
+    text: `你在演唱会上对着台下六个人的方向停了三秒。你没有指认任何人，你只是笑了一下。后来，你在私密小号发了一句话："如果平行时空存在，我会选一个全都不要，再选一个全都想要。"\n第二天，六个人同时点赞。但没人再追问。你们心照不宣，把答案留给了想象。` },
+  // ---- TE(隐藏) ----
+  { id: "te_sixworld", type: "TE", title: "《六人一世界》", achievement: "六个姐夫轮流值班",
+    cond: s => heartsAllGte(s.hearts, 95) && trustAllGte(s.trust, 80) && s.attrs.人气值 >= 85 && s.currentRisk < 25,
+    text: `不是海王，是真·六人共妻。六个人达成了某种微妙的平衡——他们不是共享，而是"守护同盟"。梁祯元负责你的事业，朴综星负责你的物质，沈载伦负责你的快乐，朴成训负责你的安全感，金善禹负责你的情绪，西村力负责你的"清醒"。\n你站在舞台中央，台下六个人各自举着你的灯牌，上面写着不同的字，拼在一起是同一句话——"我们都在。"\n粉圈从"打死那个姐夫"变成"六个姐夫轮流值班"，最后变成了"算了，姐姐开心就好"。` },
+  { id: "te_restart", type: "TE", title: "《重来》", achievement: "慢慢来",
+    cond: s => s.endingsUnlocked.length >= 3 && s.everBE && heartsAllGte(s.hearts, 90) && s.attrs.人气值 >= 85,
+    text: `你在某个清晨醒来，手机里是六条未读消息——不同的 ID，不同的语气，但都是同一句话："你醒了？今天签售，我会去。你不用选我。你只要选你自己就好。"\n你愣了一下。这一幕，你好像……经历过很多次了。你笑了笑，推开窗，阳光照进来。不管哪一次轮回，你都会走上这条路。但这一次，你决定——慢慢来。` }
+];
+
+// 结局评估：返回第一个满足条件的结局（TE 优先，其次公共/HE，再 BE/OE）
+function evaluateEnding(state) {
+  const order = ["TE", "公共", "HE", "BE", "OE"];
+  const sorted = [...ENDINGS].sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
+  for (const e of sorted) {
+    try { if (e.cond(state)) return e; } catch { /* skip malformed cond */ }
+  }
+  return null;
+}
 
 // 第1天开场剧情：用函数动态注入主角艺名/花名，避免出现"主控"游戏术语
 function buildInitStory(char) {
@@ -198,10 +275,10 @@ const INIT_CHOICES = [
 // 邂逅始终通过 continueStory 接入主线引擎，绝不新开一套逻辑。
 // ============================================================
 const WORLDS = [
-    { id: "main", code: "PRIME", name: "常驻主世界", unlocked: true,
+    { id: "main", code: "PRIME", name: "璀璨人生", unlocked: true,
       tagline: "镁光灯下的娱乐圈修罗场",
       desc: "顶流爱豆的双面人生。每一次营业与暗涌，都会把这条世界线推向新的分歧。",
-      cardLabel: "主线 · 光夜变奏" },
+      cardLabel: "主线 · 平行时空" },
     { id: "vampire", code: "SANGUIS", name: "赤红契约", unlocked: false,
       tagline: "古堡 · 暗夜 · 血族博弈",
       desc: "月色浸透的古堡长廊，甜腥的猎杀与誓约。血族平行宇宙 · 序章筹备中。",
@@ -219,11 +296,10 @@ function getWorld(id) { return WORLDS.find(w => w.id === id) || WORLDS[0]; }
 
 const ENCOUNTER_LOCATIONS = {
     main: [
-        { emoji: "🥤", title: "公司茶水间", sub: "无人的午后，只剩咖啡机的嗡鸣" },
+        { emoji: "☕", title: "咖啡店", sub: "靠窗的角落，拿铁的热气模糊了视线" },
+        { emoji: "🎬", title: "电影院", sub: "散场后的空厅，银幕的余光还没散" },
+        { emoji: "🌳", title: "公园", sub: "傍晚的长椅，风把落叶吹到脚边" },
         { emoji: "🏪", title: "深夜便利店", sub: "收工后偶遇，关东煮冒着热气" },
-        { emoji: "🚪", title: "练习室走廊", sub: "汗味与镜面，深夜灯光昏黄" },
-        { emoji: "🌃", title: "公司天台", sub: "城市夜景铺开，风把话吹散" },
-        { emoji: "💄", title: "后台化妆间", sub: "散场后的安静，镜前只剩你们" },
         { emoji: "🚗", title: "回程的车里", sub: "保姆车最后一排，肩靠着肩" }
     ],
     vampire: [
@@ -242,7 +318,7 @@ function getEncounterLocations(worldId) { return ENCOUNTER_LOCATIONS[worldId] ||
 
 function initFanEmotions() {
     const emotions = {};
-    FANS.forEach(fan => { emotions[fan.id] = { affection: 30, trust: 40, obsession: 20, jealousy: 25, recentInteractions: [] }; });
+    FANS.forEach(fan => { emotions[fan.id] = { trust: 40, jealousy: 25, recentInteractions: [] }; });
     return emotions;
 }
 
@@ -409,6 +485,26 @@ function migrateSaveData(raw) {
         data.paidDmDaily.thread = [];
     }
     if (data.coupleExposure === undefined) data.coupleExposure = null;
+    // ===== V18 → V19 迁移 =====
+    // 1) 海后值删除；2) 暴露风险/疑虑从 0-10 改百分制；3) 黑粉改百分比；
+    // 4) 大粉情感删去 affection/obsession（好感统一用 hearts），吃醋度改由公式派生
+    if (!data.schemaV19) {
+        delete data.seaLevel;
+        if (typeof data.currentRisk === "number" && data.currentRisk <= 10) data.currentRisk = Math.round(data.currentRisk * 10);
+        if (typeof data.suspicion === "number" && data.suspicion <= 10) data.suspicion = Math.round(data.suspicion * 10);
+        if (typeof data.antiCount === "number" && data.antiCount > 20) data.antiCount = Math.min(100, Math.round(data.antiCount / 3)); // 旧的绝对值 → 百分比近似
+        if (data.fanEmotions && typeof data.fanEmotions === "object") {
+            Object.keys(data.fanEmotions).forEach(k => {
+                const e = data.fanEmotions[k] || {};
+                data.fanEmotions[k] = { trust: e.trust ?? 40, jealousy: e.jealousy ?? 25, recentInteractions: e.recentInteractions || [], relationshipStatus: e.relationshipStatus };
+            });
+        }
+        data.schemaV19 = true;
+    }
+    if (data.altAccounts === undefined) data.altAccounts = { twitter: false, tiktok: false, weibo: false, instagram: false };
+    if (data.encounterUsed === undefined) data.encounterUsed = {};
+    if (data.endingsUnlocked === undefined) data.endingsUnlocked = [];
+    if (data.cycleCount === undefined) data.cycleCount = 0;
     // 【兜底】旧存档可能写入了"主控"字样的剧情文本，加载时清洗一遍
     if (data.char) {
         if (typeof data.currentStory === 'string') {
@@ -506,6 +602,13 @@ function importSaveFromFile(slotId, onSuccess) {
         reader.readAsText(file);
     };
     input.click();
+}
+
+// 顶部时间：把"天数"映射成一个会随剧情推进变化的时钟/日期显示（顶部仅保留时间变化）
+function gameClock(day) {
+    const d = Math.max(1, day || 1);
+    const week = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    return `${week[(d - 1) % 7]} · 第${Math.ceil(d / 7)}周`;
 }
 
 function generateRandomSchedule(day) {
@@ -749,7 +852,7 @@ function cleanDanmakuList(list) {
 // ============================================================
 // 直播组件（独立，避免 renderModal 里 Hooks 违规）
 // ============================================================
-function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleExposure,
+function LiveModal({ char, currentRisk, fandomHeat, antiCount, coupleExposure,
     liveMessages, setLiveMessages, liveActive, setLiveActive,
     hearts, updateHearts, updateRisk, addWorldState, triggerSocialDynamic,
     onClose }) {
@@ -767,13 +870,13 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
     const danmakuBufferRef = React.useRef([]);
     const drippingRef = React.useRef(false);
     const liveTopicRef = React.useRef(liveTopic);
-    const liveContextRef = React.useRef({ seaLevel, currentRisk, fandomHeat, antiCount });
+    const liveContextRef = React.useRef({ currentRisk, fandomHeat, antiCount });
     const livePhaseRef = React.useRef(0);
     // ⭐ 记录玩家最近一次直播发言（30秒内有效），让后台批量拉的弹幕也能呼应
     const lastPlayerSpeechRef = React.useRef(null);
 
     React.useEffect(() => { liveTopicRef.current = liveTopic; }, [liveTopic]);
-    React.useEffect(() => { liveContextRef.current = { seaLevel, currentRisk, fandomHeat, antiCount }; }, [seaLevel, currentRisk, fandomHeat, antiCount]);
+    React.useEffect(() => { liveContextRef.current = { currentRisk, fandomHeat, antiCount }; }, [currentRisk, fandomHeat, antiCount]);
     React.useEffect(() => { livePhaseRef.current = livePhase; }, [livePhase]);
     React.useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [liveMessages]);
 
@@ -821,7 +924,7 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
             };
             try {
                 const result = await callEdgeFunction('live', {
-                    gameContext: { seaLevel: ctx.seaLevel, riskLevel: ctx.currentRisk, fandomHeat: ctx.fandomHeat, antiCount: ctx.antiCount, artistName: char?.artistName, nickname: char?.nickname },
+                    gameContext: { riskLevel: ctx.currentRisk, fandomHeat: ctx.fandomHeat, antiCount: ctx.antiCount, artistName: char?.artistName, nickname: char?.nickname },
                     liveContext: liveContextPayload
                 });
                 const clean = cleanDanmakuList(result.comments);  // ⭐ 丢空弹幕/重复
@@ -953,7 +1056,7 @@ function LiveModal({ char, seaLevel, currentRisk, fandomHeat, antiCount, coupleE
         };
         try {
             const result = await callEdgeFunction('live', {
-                gameContext: { seaLevel, riskLevel: currentRisk, fandomHeat, antiCount, artistName: char?.artistName, nickname: char?.nickname },
+                gameContext: { riskLevel: currentRisk, fandomHeat, antiCount, artistName: char?.artistName, nickname: char?.nickname },
                 liveContext: liveContextPayload
             });
             const clean = cleanDanmakuList(result.comments);  // ⭐ 丢空弹幕/重复
@@ -1311,30 +1414,31 @@ function GameApp({ slotId, initialData, onBack }) {
     const [dmHistories, setDmHistories] = React.useState(initialData.dmHistories || {});
     
     // 世界状态
-    const [seaLevel, setSeaLevel] = React.useState(initialData.seaLevel || 0);
-    const [currentRisk, setCurrentRisk] = React.useState(initialData.currentRisk || 0);
-    const [suspicion, setSuspicion] = React.useState(initialData.suspicion || 0); // 粉丝疑虑值（0-10），疑虑>=5时下次失误触发真实风险
-    // 【同回合 risk 累积上限】一个回合内（一段剧情期间）最多累积 +3 风险，防止多触发点叠加暴毙
+    // 需求：删除海后值；暴露风险改百分制(0-100)；黑粉改百分比(初始<10%)；粉圈热度初始 30-70 随机
+    const [currentRisk, setCurrentRisk] = React.useState(initialData.currentRisk || 0); // 暴露风险 0-100（百分制）
+    const [suspicion, setSuspicion] = React.useState(initialData.suspicion || 0); // 粉丝疑虑值（0-100），疑虑>=50时下次失误触发真实风险
+    // 【同回合 risk 累积上限】一个回合内（一段剧情期间）最多累积风险，防止多触发点叠加暴毙
     const riskTurnAccumRef = React.useRef(0);
-    const RISK_TURN_CAP = 3;
-    const [fandomHeat, setFandomHeat] = React.useState(initialData.fandomHeat || 65);
-    const [antiCount, setAntiCount] = React.useState(initialData.antiCount || 30);
-    const [money, setMoney] = React.useState(initialData.money || 45);
+    const RISK_TURN_CAP = 15;
+    const [fandomHeat, setFandomHeat] = React.useState(initialData.fandomHeat ?? (Math.floor(Math.random() * 41) + 30)); // 粉圈热度 30-70 随机
+    const [antiCount, setAntiCount] = React.useState(initialData.antiCount ?? (Math.floor(Math.random() * 8) + 2)); // 黑粉占比 %，初始 <10%
+    const [money, setMoney] = React.useState(initialData.money ?? 10);
     const [companyFavor, setCompanyFavor] = React.useState(initialData.companyFavor || 60);
     const [companyContract, setCompanyContract] = React.useState(initialData.companyContract || null); // 不平等条约
     
     // 完整属性系统
+    // 需求：人气/国民度/时尚初始 30；颜值除整容外不可提升（美容仅+1~2）；智商情商固定；vocal/dance/rap 可增减
     const [attrs, setAttrs] = React.useState(initialData.attrs || {
-        人气值: Math.floor(Math.random() * 31) + 65,
-        颜值: Math.floor(Math.random() * 29) + 70,
-        国民度: Math.floor(Math.random() * 41) + 50,
-        时尚度: Math.floor(Math.random() * 48) + 45,
-        金钱值: Math.floor(Math.random() * 56) + 30,
-        vocal: Math.floor(Math.random() * 31) + 60,
-        dance: Math.floor(Math.random() * 31) + 60,
-        rap: Math.floor(Math.random() * 31) + 50,
-        iq: Math.floor(Math.random() * 21) + 75,
-        eq: Math.floor(Math.random() * 21) + 70
+        人气值: 30,
+        颜值: Math.floor(Math.random() * 21) + 55,   // 出道颜值底子（固定，除整容/长期美容外不涨）
+        国民度: 30,
+        时尚度: 30,
+        金钱值: 10,                                     // 资金初始 10（万）
+        vocal: Math.floor(Math.random() * 31) + 55,
+        dance: Math.floor(Math.random() * 31) + 55,
+        rap: Math.floor(Math.random() * 31) + 45,
+        iq: Math.floor(Math.random() * 21) + 70,       // 固定
+        eq: Math.floor(Math.random() * 21) + 65        // 固定
     });
     
     // 剧情状态
@@ -1375,7 +1479,14 @@ function GameApp({ slotId, initialData, onBack }) {
     const [warpTarget, setWarpTarget] = React.useState(null);
     const [showWorldMap, setShowWorldMap] = React.useState(false);
     const [showEncounter, setShowEncounter] = React.useState(false);
+    // 【结局系统】已解锁结局(用于多周目真结局判定) + 周目数 + 当前触发的结局
+    const [endingsUnlocked, setEndingsUnlocked] = React.useState(initialData.endingsUnlocked || []);
+    const [cycleCount, setCycleCount] = React.useState(initialData.cycleCount || 0);
+    const [triggeredEnding, setTriggeredEnding] = React.useState(null);
     const [encounterFan, setEncounterFan] = React.useState(null);
+    // 【偶遇】每天每位男主仅有一次机会：记录 { [day]: [fanId,...] }
+    const [encounterUsed, setEncounterUsed] = React.useState(initialData.encounterUsed || {});
+    const isEncounterUsed = (fanId) => (encounterUsed[day] || []).includes(fanId);
     // 【光夜变奏】当前世界线 → <html data-world>，驱动全局换肤；离开游戏时复位为主世界
     React.useEffect(() => {
         document.documentElement.setAttribute('data-world', currentWorld);
@@ -1415,6 +1526,7 @@ function GameApp({ slotId, initialData, onBack }) {
     const [youtubeTab, setYoutubeTab] = React.useState("videos");
     const [cpostTab, setCpostTab] = React.useState("weibo");
     const [jiefuTab, setJiefuTab] = React.useState("jiefu");
+    const [shopTab, setShopTab] = React.useState("shop"); // 商城内：商品 / 送礼
 
     // 【社交引擎】各平台 feed（持久化）+ 发帖器/评论区/加载态
     const SOCIAL_MODALS = ["youtube", "instagram", "twitter", "tiktok", "cpost", "threads", "jiefu", "weverse"];
@@ -1424,14 +1536,21 @@ function GameApp({ slotId, initialData, onBack }) {
     const [commentSheet, setCommentSheet] = React.useState(null);   // { feedKey, postId }
     const [commentLoading, setCommentLoading] = React.useState(false);
     const [tiktokAlt, setTiktokAlt] = React.useState(initialData.tiktokAlt || false);        // TikTok 小号开关
+    // 【小号管理】可在 Twitter/TikTok/微博/ins 四个软件中自主选择是否注册小号
+    const [altAccounts, setAltAccounts] = React.useState(initialData.altAccounts || { twitter: false, tiktok: false, weibo: false, instagram: false });
     const [snsInput, setSnsInput] = React.useState("");             // 小号发文输入
     const [liveMessages, setLiveMessages] = React.useState([]);     // 直播弹幕
     const [liveActive, setLiveActive] = React.useState(false);      // 直播进行中
     const [toastMsg, setToastMsg] = React.useState("");             // 手机操作就地反馈（不推主线）
+    const [dailySummary, setDailySummary] = React.useState(null);   // 【每日总结】一天结束时生成的当天总结卡
 
     // 当前 activeModal 对应的 feed key（cpost/jiefu 含子tab）
     const feedKeyFor = (modal) => {
-        if (modal === "cpost") return `cpost:${cpostTab}`;
+        if (modal === "cpost") {
+            if (cpostTab === "jiefu") return `jiefu:jiefu`;
+            if (cpostTab === "jiefubing") return `jiefu:jiefubing`;
+            return `cpost:${cpostTab}`;
+        }
         if (modal === "jiefu") return `jiefu:${jiefuTab}`;
         return modal;
     };
@@ -1443,7 +1562,6 @@ function GameApp({ slotId, initialData, onBack }) {
         const result = await callEdgeFunction('getSocialDynamic', {
             currentEvents: events,
             riskLevel: currentRisk,
-            seaLevel,
             artistName: char?.artistName,
             nickname: char?.nickname,
             unlockedFans: unlocked.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean).join("、")
@@ -1526,7 +1644,7 @@ function GameApp({ slotId, initialData, onBack }) {
             platformId,
             gameContext: {
                 artistName: char?.artistName, nickname: char?.nickname,
-                seaLevel, riskLevel: currentRisk, antiCount, fandomHeat,
+                riskLevel: currentRisk, antiCount, fandomHeat,
                 day,                                              // ⭐ 第几天
                 hasStartedDating: unlocked.length > 0,            // ⭐ 是否已开始私联
                 unlockedFans: unlockedNames,                      // ⭐ 私联了谁
@@ -1557,7 +1675,7 @@ function GameApp({ slotId, initialData, onBack }) {
         if (media && unlocked.length > 0) updateRisk(2);
         const result = await callEdgeFunction('business', {
             platform: platformName, type: "发帖", content,
-            gameContext: { popularity: attrs.人气值, seaLevel, antiCount, fandomHeat, artistName: char?.artistName, nickname: char?.nickname, unlockedFans: unlocked.map(id => FANS.find(f => f.id === id)?.name) }
+            gameContext: { popularity: attrs.人气值, antiCount, fandomHeat, artistName: char?.artistName, nickname: char?.nickname, unlockedFans: unlocked.map(id => FANS.find(f => f.id === id)?.name) }
         });
         if (result?.error) {
             console.warn('[handlePostInSocial] 评论生成失败:', result.error);
@@ -1570,21 +1688,27 @@ function GameApp({ slotId, initialData, onBack }) {
         }
     };
 
-    // 海后值联动大粉情绪
+    // 【吃醋度公式】不随其他数值加减，而是由好感度(hearts)与信任度(trust)实时推导：
+    //   好感<90：吃醋度 = 50 + (100-信任)×0.8  （信任越高越冷静，越低越失控）
+    //   好感≥90：吃醋度恒定 20（无条件包容）
+    const computeJealousy = (affectionHearts, trust) => {
+        if (affectionHearts >= 90) return 20;
+        return Math.round(Math.min(130, Math.max(0, 50 + (100 - (trust || 0)) * 0.8)));
+    };
+    // 当好感/信任变化时，把每位大粉的吃醋度重算（只在检测到有暧昧他人时才生效——这里始终重算，保持一致）
     React.useEffect(() => {
-        const jealousyIncrease = Math.floor(seaLevel / 20);
-        if (jealousyIncrease > 0) {
-            setFanEmotions(prev => {
-                const next = { ...prev };
-                Object.keys(next).forEach(fanId => {
-                    if (next[fanId]) next[fanId].jealousy = Math.min(100, next[fanId].jealousy + jealousyIncrease / 10);
-                });
-                return next;
+        setFanEmotions(prev => {
+            const next = { ...prev };
+            FANS.forEach(fan => {
+                if (next[fan.id]) {
+                    next[fan.id] = { ...next[fan.id], jealousy: computeJealousy(hearts[fan.id] ?? 0, next[fan.id].trust ?? 40) };
+                }
             });
-        }
-    }, [seaLevel]);
-    
-    // 心动值≥90 特殊剧情提示
+            return next;
+        });
+    }, [hearts]);
+
+    // 好感度≥90 特殊剧情提示
     const [highHeartEvent, setHighHeartEvent] = React.useState(null);
     React.useEffect(() => {
         const highHeartFans = Object.entries(hearts).filter(([id, val]) => val >= 90);
@@ -1592,7 +1716,7 @@ function GameApp({ slotId, initialData, onBack }) {
             const fan = FANS.find(f => f.id === highHeartFans[0][0]);
             setHighHeartEvent({
                 fan: fan,
-                message: `💗 ${fan.name} 对你的心动值已达90！他似乎愿意为你做任何事，甚至...`
+                message: `💗 ${fan.name} 对你的好感度已达90！他似乎愿意为你做任何事，甚至...`
             });
             setTimeout(() => setHighHeartEvent(null), 8000);
         }
@@ -1602,11 +1726,11 @@ function GameApp({ slotId, initialData, onBack }) {
     const saveFailedRef = React.useRef(false);
     React.useEffect(() => {
         const saveData = {
-            char, day, hearts, seaLevel, unlocked, currentStory, currentChoices, currentRisk, suspicion,
+            char, day, hearts, unlocked, currentStory, currentChoices, currentRisk, suspicion,
             history, storySummary, schedules, attrs, money, teammates, fandomHeat, antiCount, fanEmotions,
             activeEvents, currentSchedule, dmReadStatus, dmHistories, coupleExposure, paidDmDaily,
             companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan,
-            currentWorld
+            currentWorld, altAccounts, encounterUsed, endingsUnlocked, cycleCount, schemaV19: true
         };
         const r = saveGameToSlot(slotId, saveData);
         if (r && r.ok === false) {
@@ -1619,9 +1743,10 @@ function GameApp({ slotId, initialData, onBack }) {
         }
         syncToCloud(slotId, saveData);
         touchActiveSlot(slotId);   // 刷新“最近在玩”时间戳，支撑被杀后 30 分钟内自动续档
-    }, [day, hearts, seaLevel, currentStory, currentChoices, currentRisk, suspicion, history, storySummary, schedules,
+    }, [day, hearts, currentStory, currentChoices, currentRisk, suspicion, history, storySummary, schedules,
         attrs, money, teammates, fandomHeat, antiCount, fanEmotions, activeEvents, currentSchedule, dmReadStatus, dmHistories,
-        coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan, currentWorld]);
+        coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan,
+        currentWorld, altAccounts, encounterUsed, endingsUnlocked, cycleCount]);
     
     // 每日推进
     React.useEffect(() => {
@@ -1648,81 +1773,96 @@ function GameApp({ slotId, initialData, onBack }) {
     }, [day]);
     
     // 更新函数
-    const updateHearts = (changes) => {
+    // 【好感度】现实约束：单次加减平常≤5，特殊事件≤10（尤其男主好感度不可大幅跳变）
+    const updateHearts = (changes, special = false) => {
         if (!changes) return;
+        const cap = special ? 10 : 5;
         setHearts(prev => {
             const next = { ...prev };
             Object.entries(changes).forEach(([id, delta]) => {
-                const value = Number(delta);
-                if (next[id] !== undefined && Number.isFinite(value)) next[id] = Math.min(100, Math.max(0, next[id] + value));
+                let value = Number(delta);
+                if (next[id] !== undefined && Number.isFinite(value)) {
+                    value = Math.max(-cap, Math.min(cap, value));
+                    next[id] = Math.min(100, Math.max(0, next[id] + value));
+                }
             });
             return next;
         });
     };
+    // 暴露风险（百分制 0-100）。危机阈值：>60 随时触发公司警觉；>80 随时可能触发脱粉回踩。
+    // 单回合累积上限 RISK_TURN_CAP(=15)，疑虑≥50 才把积累引爆为真实风险。
     const updateRisk = (delta) => {
         if (delta <= 0) {
-            // 风险下降不受限制
-            setCurrentRisk(prev => Math.min(10, Math.max(0, prev + delta)));
+            setCurrentRisk(prev => Math.min(100, Math.max(0, prev + delta)));
             return;
         }
-        // 【同回合累积上限】单回合内 risk 上涨已超过 RISK_TURN_CAP 则丢弃
         if (riskTurnAccumRef.current >= RISK_TURN_CAP) return;
-        // 把本次 delta 限制在剩余配额内
         const allowed = Math.min(delta, RISK_TURN_CAP - riskTurnAccumRef.current);
         delta = allowed;
         riskTurnAccumRef.current += allowed;
-        // 疑虑期缓冲：在 setCurrentRisk 的 functional update 里判断实时 risk，避免闭包陷阱
         setCurrentRisk(prevRisk => {
-            // 直接增长情况：风险已经 >= 7 时跳过疑虑缓冲，直接加
-            if (prevRisk >= 7) {
-                const newRisk = Math.min(10, prevRisk + Math.min(delta, 2));
-                // 进入或继续危机模式：强震动
-                if (newRisk >= 8 && prevRisk < 8) { vibrate(VIBE.crisis); playSFX('crisis'); }
+            // 风险已 >= 60（危机区）：直接累加，不再走疑虑缓冲
+            if (prevRisk >= 60) {
+                const newRisk = Math.min(100, prevRisk + delta);
+                if (newRisk >= 80 && prevRisk < 80) { vibrate(VIBE.crisis); playSFX('crisis'); }
                 else if (newRisk > prevRisk) { vibrate(VIBE.riskUp); playSFX('risk'); }
                 return newRisk;
             }
-            return prevRisk; // 否则不动 risk，由下面 setSuspicion 决定
+            return prevRisk;
         });
         setSuspicion(prev => {
-            const newSusp = Math.min(10, prev + delta);
-            if (newSusp >= 5) {
-                // 疑虑爆发 → 转化为真实风险
+            const newSusp = Math.min(100, prev + delta);
+            if (newSusp >= 50) {
                 setCurrentRisk(r => {
-                    const newRisk = Math.min(10, r + Math.min(delta, 2));
-                    if (newRisk >= 8 && r < 8) { vibrate(VIBE.crisis); playSFX('crisis'); }
+                    const newRisk = Math.min(100, r + delta);
+                    if (newRisk >= 80 && r < 80) { vibrate(VIBE.crisis); playSFX('crisis'); }
                     else if (newRisk > r) { vibrate(VIBE.riskUp); playSFX('risk'); }
                     return newRisk;
                 });
-                return Math.max(0, newSusp - 5);
+                return Math.max(0, newSusp - 50);
             }
-            return newSusp; // 暂时积累疑虑
+            return newSusp;
         });
     };
-    const updateSuspicion = (delta) => setSuspicion(prev => Math.min(10, Math.max(0, prev + delta)));
-    const updateSeaLevel = (delta) => setSeaLevel(prev => {
-        // 公司管控等级越高，海后值增长越被压制（只压制上涨，下降不打折）
-        let finalDelta = delta;
-        if (delta > 0 && companyContract?.signed) {
-            const control = companyContract.control || 0;
-            finalDelta = Math.max(1, Math.ceil(delta / (control + 1)));
-        }
-        return Math.min(100, Math.max(0, prev + finalDelta));
-    });
+    const updateSuspicion = (delta) => setSuspicion(prev => Math.min(100, Math.max(0, prev + delta)));
     const updateMoney = (delta) => setMoney(prev => Math.max(0, prev + delta));
-    const updateAttrs = (changes) => setAttrs(prev => ({ ...prev, ...changes }));
+    // 【数值现实约束】颜值除整容外不可提升（美容仅+1~2）；智商/情商固定；vocal/dance/rap 可增减；
+    // 其余数值加减一律 clamp（平常≤5，特殊事件≤10）
+    const LOCKED_ATTRS = ["颜值", "iq", "eq"];
+    const clampAttrDelta = (key, delta, special = false) => {
+        if (LOCKED_ATTRS.includes(key)) return 0;              // 颜值/智商/情商锁定
+        const cap = special ? 10 : 5;
+        return Math.max(-cap, Math.min(cap, Number(delta) || 0));
+    };
+    const updateAttrs = (changes, special = false) => setAttrs(prev => {
+        const next = { ...prev };
+        Object.entries(changes || {}).forEach(([k, v]) => {
+            const d = clampAttrDelta(k, v, special);
+            if (d !== 0) next[k] = Math.max(0, Math.min(100, (prev[k] || 0) + d));
+        });
+        return next;
+    });
+    // 长期坚持美容：颜值可提升 1~2 点（唯一非整容的提升途径），单独通道绕过 LOCKED
+    const beautifyFace = (pts = 1) => setAttrs(prev => ({ ...prev, 颜值: Math.min(100, prev.颜值 + Math.max(1, Math.min(2, pts))) }));
+    // 【大粉情感】删去心动值(affection 独立槽)与痴迷度(obsession)：好感度统一用 hearts，
+    // 这里只维护 trust；吃醋度(jealousy)由 computeJealousy 依据好感/信任实时推导，不接受直接加减。
     const updateFanEmotion = (fanId, changes) => {
         if (!changes) return;
-        setFanEmotions(prev => ({
-            ...prev,
-            [fanId]: {
-                ...(prev[fanId] || { affection: 30, trust: 40, obsession: 20, jealousy: 25, recentInteractions: [] }),
-                affection: Math.min(100, Math.max(0, (prev[fanId]?.affection || 30) + (Number(changes.affection) || 0))),
-                trust: Math.min(100, Math.max(0, (prev[fanId]?.trust || 40) + (Number(changes.trust) || 0))),
-                obsession: Math.min(100, Math.max(0, (prev[fanId]?.obsession || 20) + (Number(changes.obsession) || 0))),
-                jealousy: Math.min(100, Math.max(0, (prev[fanId]?.jealousy || 25) + (Number(changes.jealousy) || 0))),
-                relationshipStatus: changes.relationshipStatus ?? prev[fanId]?.relationshipStatus
-            }
-        }));
+        setFanEmotions(prev => {
+            const base = prev[fanId] || { trust: 40, jealousy: 25, recentInteractions: [] };
+            // 信任度也遵循现实约束：平常≤5，特殊≤10
+            const trustDelta = Math.max(-5, Math.min(5, Number(changes.trust) || 0));
+            const newTrust = Math.min(100, Math.max(0, (base.trust ?? 40) + trustDelta));
+            return {
+                ...prev,
+                [fanId]: {
+                    ...base,
+                    trust: newTrust,
+                    jealousy: computeJealousy(hearts[fanId] ?? 0, newTrust),
+                    relationshipStatus: changes.relationshipStatus ?? base.relationshipStatus
+                }
+            };
+        });
     };
 
     // ⭐【日程系统】确认今日行程：把早/中/晚选中活动的效果一次性结算，并锁定当天（防刷）
@@ -1774,7 +1914,7 @@ function GameApp({ slotId, initialData, onBack }) {
     const refreshSocialContent = async (platform, type) => {
         const unlockedNames = unlocked.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean);
         const gameContext = {
-            day, seaLevel, riskLevel: currentRisk, popularity: attrs.人气值,
+            day, riskLevel: currentRisk, popularity: attrs.人气值,
             fandomHeat, antiCount, recentEvent: activeEvents[0]?.name,
             artistName: char?.artistName, nickname: char?.nickname,    // ⭐ 让 AI 知道艺人是谁
             hasStartedDating: unlocked.length > 0,                      // ⭐ 是否已开始私联
@@ -1817,6 +1957,7 @@ function GameApp({ slotId, initialData, onBack }) {
     };
 
     const continueStoryLockRef = React.useRef(false);
+    // 主线剧情推进。偶遇（心动邂逅）不走这里——它是完全独立的彩蛋分支，见 startEncounter。
     const continueStory = async (playerAction) => {
         // 重入保护：useRef 在同一次事件循环中立即生效，比 loading state 更可靠
         if (continueStoryLockRef.current) {
@@ -1830,17 +1971,32 @@ function GameApp({ slotId, initialData, onBack }) {
         const worldStateSummary = worldState.length ? `玩家在做决定前还做了：${worldState.join("；")}` : "";
         clearWorldState();
         
+        // 各大粉情感（好感=hearts，信任=trust，吃醋=jealousy 派生）打包给后端做叙事/吃醋判定
+        const fanRelations = {};
+        FANS.forEach(f => {
+            fanRelations[f.id] = {
+                name: f.name,
+                好感度: hearts[f.id] ?? 0,
+                信任度: fanEmotions[f.id]?.trust ?? 40,
+                吃醋度: fanEmotions[f.id]?.jealousy ?? computeJealousy(hearts[f.id] ?? 0, fanEmotions[f.id]?.trust ?? 40),
+                已私联: unlocked.includes(f.id)
+            };
+        });
         const storyData = {
             context: {
                 character: char,
-                day, heartLevels: hearts, seaLevel, unlockedFans: unlocked, attrs,
+                day, heartLevels: hearts, unlockedFans: unlocked, attrs,
+                fanRelations,
+                playerPersonality: char?.hiddenTrait,        // 严格遵守玩家开局选择的性格
                 teammates: teammates?.map(t => t.name) || [],
                 previousStory: currentStory,
                 storySummary,
+                todaySchedule: scheduleMap[day] || dailyPlan, // 剧情穿插玩家安排的日程
                 worldStateSummary, coupleExposure
             },
             playerAction,
-            worldState: { seaLevel, currentRisk, suspicion, popularity: attrs.人气值, fandomHeat, antiCount, companyFavor },
+            // 海后值已删除；风险/黑粉/粉圈热度均为百分制
+            worldState: { currentRisk, suspicion, popularity: attrs.人气值, fandomHeat, antiCount, companyFavor },
             stream: true  // 请求流式输出
         };
 
@@ -1911,13 +2067,21 @@ function GameApp({ slotId, initialData, onBack }) {
         } else if (result?.story) {
             setCurrentStory(result.story);
             setCurrentChoices(result.choices || ["继续", "等待", "观察"]);
-            if (result.heartChanges) updateHearts(result.heartChanges);
+            const isSpecial = !!result.specialEvent; // 后端可标记"特殊事件"，允许数值幅度到 10（否则≤5）
+            if (result.heartChanges) updateHearts(result.heartChanges, isSpecial);
             if (result.emotionChanges) Object.entries(result.emotionChanges).forEach(([fanId, changes]) => updateFanEmotion(fanId, changes));
-            if (result.seaChange) updateSeaLevel(result.seaChange);
+            // 通用属性增减（人气/国民度/时尚/vocal/dance/rap…）走 clamp，颜值/智商/情商自动锁定
+            if (result.attrChanges) updateAttrs(result.attrChanges, isSpecial);
+            if (result.beautify) beautifyFace(result.beautify); // 长期美容：颜值+1~2（唯一非整容通道）
             if (result.riskChange) updateRisk(result.riskChange);
             if (result.suspicionChange) updateSuspicion(result.suspicionChange); // 疑虑期：小失误转疑虑，不直接爆发
-            if (result.popularityChange) setAttrs(prev => ({ ...prev, 人气值: Math.max(0, Math.min(100, prev.人气值 + result.popularityChange)) }));
+            if (typeof result.fandomChange === "number" && result.fandomChange) setFandomHeat(prev => Math.max(0, Math.min(100, prev + Math.max(-10, Math.min(10, result.fandomChange)))));
+            if (typeof result.antiChange === "number" && result.antiChange) setAntiCount(prev => Math.max(0, Math.min(100, prev + Math.max(-10, Math.min(10, result.antiChange)))));
+            if (typeof result.companyChange === "number" && result.companyChange) setCompanyFavor(prev => Math.max(0, Math.min(100, prev + Math.max(-10, Math.min(10, result.companyChange)))));
+            if (result.popularityChange) setAttrs(prev => ({ ...prev, 人气值: Math.max(0, Math.min(100, prev.人气值 + Math.max(-10, Math.min(10, result.popularityChange)))) }));
             if (result.coupleExposure) setCoupleExposure(result.coupleExposure);
+            // 【剧情深度融合】后端可返回 triggerPhone，让剧情"主动弹出"手机界面（Kakao/DM/论坛/Weverse…）
+            if (result.triggerPhone) handleStoryTrigger(result.triggerPhone);
 
             // 私联解锁
             if (result.newUnlockedFan && !unlocked.includes(result.newUnlockedFan)) {
@@ -1944,16 +2108,33 @@ function GameApp({ slotId, initialData, onBack }) {
                 });
             }
             setDay(prev => prev + 1);
-            // 【自然衰减】互联网是没有记忆的——每过一天风险自然下降 1（最低 0）
-            // 但风险 >= 8 的危机模式下不衰减（爆瓜中正在发酵）
-            setCurrentRisk(prev => prev >= 8 ? prev : Math.max(0, prev - 1));
-            // 疑虑值也每天衰减 1（粉丝吃过瓜后会慢慢淡忘）
-            setSuspicion(prev => Math.max(0, prev - 1));
-            // 重置同回合 risk 累积计数
-            riskTurnAccumRef.current = 0;
+            // 【每日总结】最晚的日程结束即一天结束 → 生成当天总结（优先用后端 daySummary，否则本地兜底）
+            {
+                const endedDay = day;
+                const sched = scheduleMap[endedDay] || dailyPlan;
+                const schedText = SCHEDULE_SLOTS.map(s => {
+                    const a = findScheduleActivity(sched?.[s.key]);
+                    return a ? `${s.label}·${a.name}` : `${s.label}·自由`;
+                }).join("  ");
+                setDailySummary({
+                    day: endedDay,
+                    text: result.daySummary || `第 ${endedDay} 天结束。今日行程：${schedText}。`,
+                    risk: currentRisk,
+                    fandom: fandomHeat
+                });
+            }
+            // 【自然衰减】互联网是没有记忆的——每过一天风险自然下降 5（最低 0）
+            // 但风险 >= 80 的危机模式下不衰减（爆瓜中正在发酵）
+            setCurrentRisk(prev => prev >= 80 ? prev : Math.max(0, prev - 5));
+            // 疑虑值也每天衰减（粉丝吃过瓜后会慢慢淡忘）
+            setSuspicion(prev => Math.max(0, prev - 8));
             // 记录今天的日程到 scheduleMap（日历持久化）
             // ⭐ 玩家已自定义并确认行程时不覆盖；只有当天完全没安排，才落一条随机行程占位
             setScheduleMap(prev => (prev[day] ? prev : { ...prev, [day]: currentSchedule }));
+            // 【结局判定】数值达到要求时开始判定（延后一拍，等本回合 state 落定）
+            setTimeout(() => checkEndings(), 400);
+            // 重置同回合 risk 累积计数
+            riskTurnAccumRef.current = 0;
             setSocialCache({});
             setSocialFeeds(prev => {
                 const next = {};
@@ -1963,9 +2144,9 @@ function GameApp({ slotId, initialData, onBack }) {
                 });
                 return next;
             });
-            // 【延迟触发涟漪】剧情渲染后 1.5s 再触发，不阻塞主流程
+            // 【延迟触发涟漪】剧情渲染后 1.5s 再触发，不阻塞主流程（风险为百分制）
             const eventSummary = (worldStateSummary || playerAction || "").slice(0, 80);
-            if (currentRisk >= 7 || (newHistory.length % 3 === 0 && Math.random() < 0.35)) {
+            if (currentRisk >= 60 || (newHistory.length % 3 === 0 && Math.random() < 0.35)) {
                 setTimeout(() => triggerSocialDynamic(eventSummary), 1500);
             }
         } else {
@@ -1994,16 +2175,142 @@ function GameApp({ slotId, initialData, onBack }) {
         setTimeout(() => { setCurrentWorld(worldId); }, 750);
         setTimeout(() => { setIsWarping(false); setWarpTarget(null); }, 1500);
     };
-    // 【心动邂逅】选定男主 + 地点 → 拼接高暧昧提示词，交给主线剧情引擎（与选项/自定义同一入口）
-    const startEncounter = (fan, loc) => {
+    // 【结局判定】把当前状态打包成 evaluateEnding 需要的形状
+    const buildEndingState = () => {
+        const trust = {}; const jealousy = {};
+        FANS.forEach(f => {
+            trust[f.id] = fanEmotions[f.id]?.trust ?? 40;
+            jealousy[f.id] = computeJealousy(hearts[f.id] ?? 0, trust[f.id]);
+        });
+        const heartVals = FANS.map(f => hearts[f.id] ?? 0);
+        return {
+            hearts, trust, jealousy, attrs, day,
+            currentRisk, fandomHeat, antiCount,
+            unlockedCount: unlocked.length,
+            endingsUnlocked, everBE: endingsUnlocked.some(id => id.startsWith("be_")),
+            maxHeart: Math.max(...heartVals), avgHeart: heartVals.reduce((a, b) => a + b, 0) / heartVals.length,
+            someFan: (fn) => FANS.some(f => fn(f.id)),
+            otherHighAmbiguity: (exceptId) => FANS.some(f => f.id !== exceptId && (hearts[f.id] ?? 0) >= 80 && unlocked.includes(f.id))
+        };
+    };
+    const checkEndings = () => {
+        if (triggeredEnding) return; // 已在结局中
+        const e = evaluateEnding(buildEndingState());
+        if (e) {
+            setTriggeredEnding(e);
+            setEndingsUnlocked(prev => prev.includes(e.id) ? prev : [...prev, e.id]);
+            vibrate(VIBE.crisis); playSFX('unlock');
+        }
+    };
+    // 结局后：继续剧情（留在本周目）
+    const continueAfterEnding = () => setTriggeredEnding(null);
+    // 结局后：结束本周目（进入下一周目，保留已解锁结局/周目数，重置进度）
+    const endCurrentCycle = () => {
+        setCycleCount(c => c + 1);
+        setTriggeredEnding(null);
+        setDay(1);
+        setCurrentRisk(0); setSuspicion(0);
+        setFandomHeat(Math.floor(Math.random() * 41) + 30);
+        setAntiCount(Math.floor(Math.random() * 8) + 2);
+        setUnlocked([]);
+        setHearts(prev => { const n = {}; Object.keys(prev).forEach(k => n[k] = 30); return n; });
+        setFanEmotions(initFanEmotions());
+        setEncounterUsed({});
+        setActiveTab("home");
+        setCurrentStory(INIT_STORY);
+        setCurrentChoices(INIT_CHOICES);
+        setToastMsg("🎬 新的周目开始了~");
+        setTimeout(() => setToastMsg(""), 3000);
+    };
+
+    // ========================================================================
+    // 【心动邂逅 · 彩蛋】完全独立于主线之外，不与任何主线状态发生交换：
+    //   ✗ 不推进天数        ✗ 不改 currentStory / currentChoices
+    //   ✗ 不加好感度/信任度  ✗ 不改风险/疑虑/粉圈热度
+    //   ✗ 不写 history       ✗ 不触发结局判定  ✗ 不生成每日总结
+    //   ✓ 只做一件事：生成一段只给玩家看的独处小剧场，显示在偶遇弹窗里
+    // 唯一持久化的是 encounterUsed（每天每位男主一次的额度），不影响任何数值。
+    // ========================================================================
+    const [encounterScene, setEncounterScene] = React.useState(null); // { fan, loc, text }
+    const [encounterLoading, setEncounterLoading] = React.useState(false);
+    const [encounterError, setEncounterError] = React.useState(null);
+    const encounterLockRef = React.useRef(false);
+
+    const startEncounter = async (fan, loc) => {
+        if (encounterLockRef.current) return;
+        if (isEncounterUsed(fan.id)) {
+            setToastMsg(`今天已经和 ${fan.name} 偶遇过了，明天再来吧~`);
+            setTimeout(() => setToastMsg(""), 2500);
+            return;
+        }
+        encounterLockRef.current = true;
+        setEncounterLoading(true);
+        setEncounterError(null);
+        setEncounterScene(null);
+        vibrate(VIBE.heartUp);
+
+        // 额度先扣（防止连点刷），失败时退回
+        setEncounterUsed(prev => ({ ...prev, [day]: [...(prev[day] || []), fan.id] }));
+
         const place = loc.sub ? `${loc.title}，${loc.sub}` : loc.title;
-        const prompt = `【心动邂逅】在${place}里，我偶然和 @${fan.name} 独处了……`;
+        // 独立的 encounter action：后端只回一段文字，不返回任何数值/选项
+        const result = await callEdgeFunction('encounter', {
+            fan: { id: fan.id, name: fan.name, type: fan.type, personality: fan.personality, handle: fan.handle },
+            place,
+            locationTitle: loc.title,
+            worldName: getWorld(currentWorld).name,
+            character: { artistName: char?.artistName, nickname: char?.nickname, age: char?.age },
+            playerPersonality: char?.hiddenTrait,   // 严格遵守玩家开局选择的性格
+            heartLevel: hearts[fan.id] ?? 0,        // 只读：决定亲密度分寸，不回写
+            trust: fanEmotions[fan.id]?.trust ?? 40,
+            isUnlocked: unlocked.includes(fan.id)
+        });
+
+        if (result?.error || !result?.scene) {
+            // 失败 → 退还今天的额度
+            setEncounterUsed(prev => ({ ...prev, [day]: (prev[day] || []).filter(id => id !== fan.id) }));
+            setEncounterError("这次偶遇没能发生……稍后再试一次吧。");
+        } else {
+            setEncounterScene({ fan, loc, text: result.scene });
+            playSFX('unlock');
+        }
+        setEncounterLoading(false);
+        encounterLockRef.current = false;
+    };
+    // 关闭偶遇彩蛋（回到偶遇入口，主线完全不受影响）
+    const closeEncounter = () => {
         setShowEncounter(false);
         setEncounterFan(null);
-        setActiveTab("story");
-        vibrate(VIBE.heartUp);
-        continueStory(prompt);
+        setEncounterScene(null);
+        setEncounterError(null);
+        setEncounterLoading(false);
     };
+
+    // 【剧情深度融合】剧情主动弹出手机界面：剧情文字里出现"手机亮了/弹出通知"时，
+    // 后端返回 triggerPhone: { type, target, data }，这里据此自动打开对应 App，而不是让玩家手点。
+    //   type: open_phone / open_kakao / open_dm / open_forum / open_weverse / open_instagram / open_live 等
+    const [storyIncomingMsg, setStoryIncomingMsg] = React.useState(null); // 剧情预填的来消息 {sender, message, choices}
+    const handleStoryTrigger = (trigger) => {
+        if (!trigger || typeof trigger !== "object") return;
+        const t = trigger.type || (trigger.target ? `open_${trigger.target}` : "open_phone");
+        const data = trigger.data || {};
+        if (data.sender || data.message) setStoryIncomingMsg({ sender: data.sender, message: data.message, choices: data.choices, fanId: trigger.fanId });
+        // 短延迟让剧情文字先落定，再"手机自己跳出来找你"
+        setTimeout(() => {
+            setShowPhone(true);
+            switch (t) {
+                case "open_kakao": setActiveModal("kakao"); if (trigger.fanId) setShowPrivateChat(FANS.find(f => f.id === trigger.fanId) || null); break;
+                case "open_dm": setActiveModal("weverse"); if (trigger.fanId) setSelectedPaidFan(FANS.find(f => f.id === trigger.fanId) || null); break;
+                case "open_forum": loadForum(trigger.target === "pann" ? "pann" : "pann"); setActiveModal("pann"); break;
+                case "open_weverse": setActiveModal("weverse"); break;
+                case "open_instagram": setActiveModal("instagram"); break;
+                case "open_live": setActiveModal("weverse"); break;
+                case "open_phone": default: setActiveTab("phone"); break;
+            }
+            vibrate(VIBE.unlock);
+        }, 600);
+    };
+
     // ========== 手机功能函数 ==========
     
     // 营业
@@ -2012,7 +2319,7 @@ function GameApp({ slotId, initialData, onBack }) {
     const handleBusiness = async (platform, type, content, triggerSpinoff) => {
         addWorldState(`在${platform}进行了${type}：${content.slice(0,25)}`);
         const gameContext = {
-            popularity: attrs.人气值, seaLevel, antiCount, fandomHeat,
+            popularity: attrs.人气值, antiCount, fandomHeat,
             artistName: char?.artistName, nickname: char?.nickname,
             unlockedFans: unlocked.map(id => FANS.find(f=>f.id===id)?.name)
         };
@@ -2051,18 +2358,16 @@ function GameApp({ slotId, initialData, onBack }) {
     const handleBuy = (item) => {
         if (money >= item.price) {
             updateMoney(-item.price);
-            if (item.effect.fashion || item.effect.beauty || item.effect.popularity) {
-                setAttrs(prev => ({
-                    ...prev,
-                    时尚度: item.effect.fashion ? (prev.时尚度 || 0) + item.effect.fashion : prev.时尚度,
-                    颜值: item.effect.beauty ? prev.颜值 + item.effect.beauty : prev.颜值,
-                    人气值: item.effect.popularity ? prev.人气值 + item.effect.popularity : prev.人气值,
-                }));
-            }
+            // 时尚/人气走 clamp 通道；颜值只能通过 beautify（美容/整容）+1~2
+            const attrDelta = {};
+            if (item.effect.fashion) attrDelta.时尚度 = item.effect.fashion;
+            if (item.effect.popularity) attrDelta.人气值 = item.effect.popularity;
+            if (Object.keys(attrDelta).length) updateAttrs(attrDelta);
+            if (item.effect.beautify) beautifyFace(item.effect.beautify);
             if (item.effect.risk) updateRisk(item.effect.risk);
             if (item.effect.heart && unlocked.length > 0) updateHearts({ [unlocked[0]]: item.effect.heart });
             addWorldState(`购物：买了${item.name}，花了${item.price}万`);
-            setToastMsg(`🛍️ 购买成功！${item.name} 已入手${item.effect.fashion ? `，时尚度+${item.effect.fashion}` : ""}${item.effect.beauty ? `，颜值+${item.effect.beauty}` : ""}${item.effect.popularity ? `，人气+${item.effect.popularity}` : ""}`);
+            setToastMsg(`🛍️ 购买成功！${item.name} 已入手${item.effect.fashion ? `，时尚度+${item.effect.fashion}` : ""}${item.effect.beautify ? `，颜值+${item.effect.beautify}` : ""}${item.effect.popularity ? `，人气+${item.effect.popularity}` : ""}`);
             setTimeout(() => setToastMsg(""), 3000);
             setActiveModal(null);
         } else alert(`金钱不足！需要${item.price}万`);
@@ -2099,20 +2404,18 @@ function GameApp({ slotId, initialData, onBack }) {
     
     // 公司交涉
     const handleCompany = async (action) => {
-        const result = await callEdgeFunction('company', { action, companyFavor, seaLevel, currentRisk, artistName: char?.artistName });
+        const result = await callEdgeFunction('company', { action, companyFavor, currentRisk, artistName: char?.artistName });
         if (result?.error || !result?.story) {
             alert(`📞 公司这边没接通，请稍后重试。`);
             return;
         }
         if (result.companyFavorChange) setCompanyFavor(prev => Math.min(100, Math.max(0, prev + result.companyFavorChange)));
         if (result.companyChange) setCompanyFavor(prev => Math.min(100, Math.max(0, prev + result.companyChange)));
-        if (result.seaChange) updateSeaLevel(result.seaChange);
         if (result.riskChange) updateRisk(result.riskChange);
         // 签约逻辑
         if (result.contractTerms) {
             setCompanyContract({ terms: result.contractTerms, control: result.companyControl || 1, signedDay: day, signed: true });
-            if (result.seaChange) updateSeaLevel(result.seaChange);
-        }
+            }
         addWorldState(`公司交涉(${action})：${result.story.slice(0, 40)}`);
         setToastMsg(`🏢 ${result.story.slice(0, 80)}`);
         setTimeout(() => setToastMsg(""), 5000);
@@ -2130,7 +2433,7 @@ const sendDM = async (fan, text, actionItem) => {
         
         const jealousy = fanEmotions[fan.id]?.jealousy || 25;
         const isJealous = jealousy > 70;
-        let heartBonus = seaLevel > 80 ? 0 : (seaLevel > 60 ? 0.5 : (seaLevel > 40 ? 0.8 : 1));
+        let heartBonus = 1;  // 海后值已删除，不再按养鱼程度打折
         
         let processedMessage = messageText;
         if (fan.name === "沈载伦") processedMessage = messageText.replace(/姐姐|欧尼/g, "你");
@@ -2151,7 +2454,8 @@ const sendDM = async (fan, text, actionItem) => {
             charAge: Number(char?.age) || 20, // 【传入年龄判定】
             userMessage: isJealous ? `[吃醋模式] ${processedMessage}` : processedMessage,
             history: currentHistory,
-            emotions: fanEmotions[fan.id],
+            emotions: { ...fanEmotions[fan.id], jealousy: computeJealousy(hearts[fan.id] ?? 0, fanEmotions[fan.id]?.trust ?? 40) },
+            heartLevel: hearts[fan.id] ?? 30,   // 好感度（后端据此判断包容/失控）
         });
         
         if (result.reply) {
@@ -2282,7 +2586,8 @@ const sendDM = async (fan, text, actionItem) => {
                     quotedFanReply: quotedPrev,       // ⭐ 额外字段：被引用的对方上条
                     isQuotedFan: isQuoted,            // ⭐ 是否就是被引用的那位
                     history: historyForApi,
-                    emotions: fanEmotions[fan.id],
+                    emotions: { ...fanEmotions[fan.id], jealousy: computeJealousy(hearts[fan.id] ?? 0, fanEmotions[fan.id]?.trust ?? 40) },
+                    heartLevel: hearts[fan.id] ?? 30,
                     playerNickname: nickname,
                 });
                 if (result?.reply) {
@@ -2328,8 +2633,7 @@ const sendDM = async (fan, text, actionItem) => {
                     quoteContent: quoteInfo.text || "",
                     playerMessage: message,
                     artistName: char?.artistName,
-                    nickname: char?.nickname,
-                    seaLevel
+                    nickname: char?.nickname
                 });
                 if (showoffResult?.showoffPost) {
                     // 注入到对应社交平台 feed
@@ -2380,7 +2684,7 @@ const sendDM = async (fan, text, actionItem) => {
         // ⭐ cacheKey 加入 unlocked 数量 + 当前活跃事件，避免开局/恋爱后、以及剧情事件
         //   推进后仍共用同一份过时缓存（这是"帖子和当前剧情对不上"的另一半原因）。
         const evtTag = (activeEvents[0]?.name || "none").slice(0, 8);
-        const cacheKey = `${platformId}_day${day}_sea${Math.floor(seaLevel/20)}_risk${Math.floor(currentRisk/3)}_unlock${unlocked.length}_evt${evtTag}`;
+        const cacheKey = `${platformId}_day${day}_risk${Math.floor(currentRisk/20)}_unlock${unlocked.length}_evt${evtTag}`;
         // 先显示缓存内容（如果有）
         if (forumCache[cacheKey]) {
             setForumContext({ posts: forumCache[cacheKey], activePlatform: platformId, selectedPost: null, postTab: "hot" });
@@ -2392,7 +2696,7 @@ const sendDM = async (fan, text, actionItem) => {
         const unlockedNames = unlocked.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean);
         const gameContext = {
             artistName: char?.artistName, nickname: char?.nickname,
-            day, seaLevel, riskLevel: currentRisk, fandomHeat, antiCount,
+            day, riskLevel: currentRisk, fandomHeat, antiCount,
             recentEvent: activeEvents[0]?.name,
             worldStateSummary: worldState.join("；"),
             hasStartedDating: unlocked.length > 0,           // ⭐
@@ -2427,7 +2731,7 @@ const sendDM = async (fan, text, actionItem) => {
         const unlockedNames = unlocked.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean);
         const gameContext = {
             artistName: char?.artistName, nickname: char?.nickname,
-            seaLevel, riskLevel: currentRisk, antiCount, fandomHeat,
+            riskLevel: currentRisk, antiCount, fandomHeat,
             day,
             hasStartedDating: unlocked.length > 0,
             unlockedFans: unlockedNames,
@@ -2451,9 +2755,15 @@ const sendDM = async (fan, text, actionItem) => {
         setForumLoading(false);
     };
     
-    // 风险等级
-    const riskClass = currentRisk >= 7 ? "risk-high" : (currentRisk >= 4 ? "risk-mid" : "risk-low");
-    const riskText = currentRisk >= 7 ? "🔴 危险" : (currentRisk >= 4 ? "🟡 注意" : "🟢 安全");
+    // 风险等级（百分制 5 级：<5 隐形 / 5-20 低危 / 20-50 中危 / 50-80 高危 / >80 致命）
+    const riskClass = currentRisk >= 50 ? "risk-high" : (currentRisk >= 20 ? "risk-mid" : "risk-low");
+    const riskLevelInfo =
+        currentRisk >= 80 ? { star: "⭐⭐⭐⭐⭐", name: "致命", text: "⚫ 塌房级" } :
+        currentRisk >= 50 ? { star: "⭐⭐⭐⭐", name: "高危", text: "🔴 高危" } :
+        currentRisk >= 20 ? { star: "⭐⭐⭐", name: "中危", text: "🟠 中危" } :
+        currentRisk >= 5  ? { star: "⭐⭐", name: "低危", text: "🟡 低危" } :
+                            { star: "⭐", name: "隐形", text: "🟢 隐形" };
+    const riskText = riskLevelInfo.text;
     const displayStory = loading && streamingStory ? streamingStory : currentStory;
     const currentEvent = activeEvents[0];
     
@@ -2483,13 +2793,12 @@ const sendDM = async (fan, text, actionItem) => {
             </div>
             <div className="sidebar-section">
                 <h4>⚠️ 风险与状态</h4>
-                <div className="sidebar-item"><span>🌊 海后值</span><span className="sidebar-value">{seaLevel}</span></div>
-                <div className="sidebar-item"><span>⚡ 暴露风险</span><span className="sidebar-value">{currentRisk}/10</span></div>
+                <div className="sidebar-item"><span>⚡ 暴露风险</span><span className="sidebar-value">{currentRisk}%</span></div>
                 <div className="sidebar-item"><span>🔥 粉圈热度</span><span className="sidebar-value">{fandomHeat}</span></div>
-                <div className="sidebar-item"><span>🗡️ 黑粉数量</span><span className="sidebar-value">{antiCount}</span></div>
+                <div className="sidebar-item"><span>🗡️ 黑粉占比</span><span className="sidebar-value">{antiCount}%</span></div>
             </div>
             <div className="sidebar-section">
-                <h4>❤️ 大关心动值</h4>
+                <h4>❤️ 大粉好感度</h4>
                 {FANS.map(fan => {
                     const emotions = fanEmotions[fan.id];
                     return (
@@ -2570,6 +2879,10 @@ const sendDM = async (fan, text, actionItem) => {
                             <span>活动</span>
                             <small>{activityTitle}</small>
                         </button>
+                        <button onClick={() => setActiveModal("calendar")}>
+                            <span>日程</span>
+                            <small>{scheduleMap[day] ? "今日已安排" : "安排上午/下午/晚上"}</small>
+                        </button>
                         <button onClick={() => setActiveTab("relation")}>
                             <span>偶遇</span>
                             <small>心动邂逅 / 关系图谱</small>
@@ -2579,7 +2892,7 @@ const sendDM = async (fan, text, actionItem) => {
                     <div className="ln-bottom-actions">
                         <button onClick={() => setActiveTab("phone")}>
                             <span>手机</span>
-                            <small>SNS / 私聊 / 日程</small>
+                            <small>SNS / 私聊 / 商城</small>
                         </button>
                         <button onClick={() => setActiveTab("settings")}>
                             <span>状态</span>
@@ -2600,7 +2913,7 @@ const sendDM = async (fan, text, actionItem) => {
                     <div className="ln-placeholder-event">
                         <div className="ln-event-badge">Coming Soon</div>
                         <h2>{currentEvent?.name || "限时活动预留位"}</h2>
-                        <p>这里以后可以放你想追加的活动。它和主线平行世界分开管理，不会挤占“光夜变奏”的章节结构。</p>
+                        <p>这里是我以后可能追加的玩法入口，独立于主线与剧情事件，不会和剧情混在一起。</p>
                         {currentEvent ? (
                             <button className="btn-primary" onClick={() => setActiveTab("story")}>前往当前事件</button>
                         ) : (
@@ -2627,19 +2940,19 @@ const sendDM = async (fan, text, actionItem) => {
                             <span style={{ color: "#f9a8d4", fontSize: 11 }}>💕 {coupleExposure.fan}的{coupleExposure.item}被粉丝发现</span>
                         </div>
                     )}
-                    {suspicion >= 5 && (
+                    {suspicion >= 50 && (
                         <div style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 14, margin: "0 16px 10px", padding: "8px 14px", fontSize: 11, color: "#fde68a" }}>
-                            👀 {suspicion >= 8 ? "粉丝疑虑极高，论坛已有人在数据分析，下次任何可疑举动都会引爆舆论" : "已有粉丝注意到一些反常迹象，蛛丝马迹正在积累..."}
+                            👀 {suspicion >= 80 ? "粉丝疑虑极高，论坛已有人在数据分析，下次任何可疑举动都会引爆舆论" : "已有粉丝注意到一些反常迹象，蛛丝马迹正在积累..."}
                         </div>
                     )}
-                    {seaLevel > 60 && (
+                    {FANS.filter(f => (fanEmotions[f.id]?.jealousy ?? 0) > 70 && unlocked.includes(f.id)).length >= 2 && (
                         <div className="sea-warning">
-                            ⚠️ 大粉们开始互相猜忌，私聊语气变酸，论坛出现"养鱼"讨论...
+                            ⚠️ 多位大粉吃醋度飙升，私聊语气变酸，论坛出现"是不是同时喜欢好几个"的讨论...
                         </div>
                     )}
-                    {currentRisk >= 8 && (
+                    {currentRisk > 60 && (
                         <div className="high-heart-event" style={{ background: "linear-gradient(135deg, #ec4899, #a855f7)" }}>
-                            🚨 狗仔/小号随时可能爆瓜，公司高管已在会议室等你（只会施压，不能替你做决定）。下一步选择将触发危机剧情。
+                            🚨 风险已过 60%，公司随时可能警觉；{currentRisk > 80 ? "已过 80%，粉丝脱粉回踩一触即发！" : "狗仔/小号随时可能爆瓜。"}下一步选择将触发危机剧情。
                         </div>
                     )}
                     {highHeartEvent && (
@@ -2651,11 +2964,10 @@ const sendDM = async (fan, text, actionItem) => {
                         {/* 氛围标签 */}
                         <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
                             <span style={{ fontSize: 10, color: "#b88dc7" }}>🎭 氛围：</span>
-                            <span style={{ fontSize: 10, fontWeight: "bold", color: seaLevel > 60 ? "#fb923c" : currentRisk > 5 ? "#f472b6" : Object.values(hearts).some(v => v > 80) ? "#ec4899" : "#10b981" }}>
-                                {seaLevel > 70 ? "💢 暗流汹涌，粉圈地震" :
-                                 seaLevel > 50 ? "🌊 暗流涌动，互相猜忌" :
-                                 currentRisk > 7 ? "🚨 危如累卵，随时爆瓜" :
-                                 currentRisk > 4 ? "⚠️ 风雨欲来，注意言行" :
+                            <span style={{ fontSize: 10, fontWeight: "bold", color: currentRisk > 60 ? "#f472b6" : Object.values(hearts).some(v => v > 80) ? "#ec4899" : "#10b981" }}>
+                                {currentRisk > 80 ? "🚨 塌房边缘，全网审判在即" :
+                                 currentRisk > 60 ? "⚠️ 风雨欲来，公司已经警觉" :
+                                 currentRisk > 30 ? "👀 热贴讨论，注意言行" :
                                  Object.values(hearts).some(v => v > 80) ? "💕 暧昧升温，心跳加速" :
                                  "☕ 日常营业"}
                             </span>
@@ -2748,7 +3060,7 @@ const sendDM = async (fan, text, actionItem) => {
             return (
                 <div style={{ padding: 16 }}>
                     <div className="ln-main-card" style={{ minHeight: 0, marginTop: 0, marginBottom: 16, padding: 18 }}
-                        onClick={() => { setEncounterFan(null); setShowEncounter(true); }}>
+                        onClick={() => { setEncounterFan(null); setEncounterScene(null); setEncounterError(null); setShowEncounter(true); }}>
                         <div>
                             <div className="ln-card-label">心动邂逅</div>
                             <h2 style={{ fontSize: 20 }}>偶遇 · {getWorld(currentWorld).name}</h2>
@@ -2768,14 +3080,15 @@ const sendDM = async (fan, text, actionItem) => {
                                     <button className="modal-close" onClick={() => setShowFanDetail(null)}>×</button>
                                 </div>
                                 <div style={{ padding: 20 }}>
-                                    <div className="sidebar-item"><span>❤️ 好感度</span><span className="sidebar-value">{fanEmotions[showFanDetail.id]?.affection || 30}</span></div>
-                                    <div className="sidebar-item"><span>🤝 信任度</span><span className="sidebar-value">{fanEmotions[showFanDetail.id]?.trust || 40}</span></div>
-                                    <div className="sidebar-item"><span>🌀 痴迷度</span><span className="sidebar-value">{fanEmotions[showFanDetail.id]?.obsession || 20}</span></div>
-                                    <div className="sidebar-item"><span>💢 吃醋度</span><span className="sidebar-value">{fanEmotions[showFanDetail.id]?.jealousy || 25}</span></div>
-                                    <div className="sidebar-item"><span>💕 心动值</span><span className="sidebar-value">{hearts[showFanDetail.id]}</span></div>
+                                    <div className="sidebar-item"><span>❤️ 好感度</span><span className="sidebar-value">{hearts[showFanDetail.id]}</span></div>
+                                    <div className="sidebar-item"><span>🤝 信任度</span><span className="sidebar-value">{fanEmotions[showFanDetail.id]?.trust ?? 40}</span></div>
+                                    <div className="sidebar-item"><span>💢 吃醋度</span><span className="sidebar-value">{computeJealousy(hearts[showFanDetail.id] ?? 0, fanEmotions[showFanDetail.id]?.trust ?? 40)}</span></div>
+                                    <div style={{ fontSize: 10, color: "#b88dc7", margin: "2px 0 10px" }}>
+                                        {hearts[showFanDetail.id] >= 90 ? "好感≥90：无条件包容，吃醋恒为 20" : "好感<90：信任越低，他越容易吃醋失控"}
+                                    </div>
                                     {hearts[showFanDetail.id] >= 90 && (
                                         <div style={{ background: "linear-gradient(135deg, #f472b6, #c084fc)", borderRadius: 12, padding: 8, marginBottom: 12, textAlign: "center" }}>
-                                            <span style={{ color: "white", fontSize: 11 }}>💗 心动值≥90！他愿意为你做任何事，甚至当男小三</span>
+                                            <span style={{ color: "white", fontSize: 11 }}>💗 好感度≥90！他愿意为你做任何事，甚至当男小三</span>
                                         </div>
                                     )}
                                     {fanEmotions[showFanDetail.id]?.jealousy > 70 && (
@@ -2819,16 +3132,16 @@ const sendDM = async (fan, text, actionItem) => {
                         <div className="phone-app" onClick={() => { loadForum("pann"); setActiveModal("pann"); }}><div className="phone-app-icon">🔥</div><div className="phone-app-name">Pann</div></div>
                         <div className="phone-app" onClick={() => setActiveModal("twitter")}><div className="phone-app-icon">𝕏</div><div className="phone-app-name">Twitter</div></div>
                         <div className="phone-app" onClick={() => setActiveModal("tiktok")}><div className="phone-app-icon">🎵</div><div className="phone-app-name">TikTok</div></div>
-                        <div className="phone-app" onClick={() => setActiveModal("cpost")}><div className="phone-app-icon">🌊</div><div className="phone-app-name">微博/豆瓣</div></div>
+                        {/* 姐夫站已并入微博（微博内设「姐夫站」子tab） */}
+                        <div className="phone-app" onClick={() => { setCpostTab("weibo"); setActiveModal("cpost"); }}><div className="phone-app-icon">🌊</div><div className="phone-app-name">微博</div></div>
                         <div className="phone-app" onClick={() => setActiveModal("threads")}><div className="phone-app-icon">🧵</div><div className="phone-app-name">Threads</div></div>
-                        <div className="phone-app" onClick={() => setActiveModal("jiefu")}><div className="phone-app-icon">⚠️</div><div className="phone-app-name">姐夫站</div></div>
                         <div className="phone-app" onClick={() => setActiveModal("youtube")}><div className="phone-app-icon">📺</div><div className="phone-app-name">YouTube</div></div>
+                        {/* 礼物已并入商城（商城内含「送礼」区） */}
                         <div className="phone-app" onClick={() => setActiveModal("shop")}><div className="phone-app-icon">🛒</div><div className="phone-app-name">商城</div></div>
                         <div className="phone-app" onClick={() => setActiveModal("company")}><div className="phone-app-icon">🏢</div><div className="phone-app-name">公司</div></div>
-                        <div className="phone-app" onClick={() => setActiveModal("calendar")}><div className="phone-app-icon">📅</div><div className="phone-app-name">日程</div></div>
                         <div className="phone-app" onClick={() => { setActiveModal("graph"); setShowRelationGraph(true); }}><div className="phone-app-icon">🕸️</div><div className="phone-app-name">关系图谱</div></div>
-                        <div className="phone-app" onClick={() => { setActiveModal("gift"); setShowGift(true); }}><div className="phone-app-icon">🎁</div><div className="phone-app-name">礼物</div></div>
-                        <div className="phone-app" onClick={() => setActiveModal("sns")}><div className="phone-app-icon">🎭</div><div className="phone-app-name">匿名小号</div></div>
+                        {/* 匿名小号 → 小号管理：可在 Twitter/TikTok/微博/ins 自主选择是否注册小号 */}
+                        <div className="phone-app" onClick={() => setActiveModal("altmanager")}><div className="phone-app-icon">🎭</div><div className="phone-app-name">小号管理</div></div>
                     </div>
                 </div>
             );
@@ -2856,13 +3169,12 @@ const sendDM = async (fan, text, actionItem) => {
                     </div>
                     <div className="sidebar-section">
                         <h4>⚠️ 风险与状态</h4>
-                        <div className="sidebar-item"><span>🌊 海后值</span><span className="sidebar-value">{seaLevel}</span></div>
-                        <div className="sidebar-item"><span>⚡ 暴露风险</span><span className="sidebar-value">{currentRisk}/10</span></div>
+                        <div className="sidebar-item"><span>⚡ 暴露风险</span><span className="sidebar-value">{currentRisk}%</span></div>
                         <div className="sidebar-item"><span>🔥 粉圈热度</span><span className="sidebar-value">{fandomHeat}</span></div>
-                        <div className="sidebar-item"><span>🗡️ 黑粉数量</span><span className="sidebar-value">{antiCount}</span></div>
+                        <div className="sidebar-item"><span>🗡️ 黑粉占比</span><span className="sidebar-value">{antiCount}%</span></div>
                     </div>
                     <div className="sidebar-section">
-                        <h4>❤️ 大关心动值</h4>
+                        <h4>❤️ 大粉好感度</h4>
                         {FANS.map(fan => (
                             <div key={fan.id} className="heart-sidebar" onClick={() => setShowFanDetail(fan)}>
                                 <span>{fan.emoji}</span>
@@ -2983,20 +3295,31 @@ const sendDM = async (fan, text, actionItem) => {
 
         // ========== 微博/豆瓣（中国平台，含子tab）==========
         if (activeModal === "cpost") {
-            const key = `cpost:${cpostTab}`;
+            const isJiefu = cpostTab === "jiefu" || cpostTab === "jiefubing";
+            const key = isJiefu ? `jiefu:${cpostTab === "jiefubing" ? "jiefubing" : "jiefu"}` : `cpost:${cpostTab}`;
             const cfg = SOCIAL_CFG[key];
             const feed = socialFeeds[key] || [];
             const loading = socialLoadingKey === key;
             return (
                 <div className="modal-overlay" onClick={() => setActiveModal(null)}>
                     <div className="modal-content" onClick={e => e.stopPropagation()}>
-                        <div className="modal-header"><h3>{cfg.title}</h3><button className="modal-close" onClick={() => setActiveModal(null)}>×</button></div>
+                        <div className="modal-header"><h3>🌊 微博</h3><button className="modal-close" onClick={() => setActiveModal(null)}>×</button></div>
                         <div style={{ padding: 16, overflowY: "auto" }}>
                             <div className="weverse-tabs">
                                 <button className={`weverse-tab ${cpostTab === "weibo" ? "active" : ""}`} onClick={() => setCpostTab("weibo")}>微博</button>
                                 <button className={`weverse-tab ${cpostTab === "douban" ? "active" : ""}`} onClick={() => setCpostTab("douban")}>豆瓣</button>
+                                <button className={`weverse-tab ${cpostTab === "jiefu" ? "active" : ""}`} onClick={() => setCpostTab("jiefu")}>⚠️ 姐夫站</button>
                             </div>
-                            {cfg.canPost && (
+                            {isJiefu && (
+                                <>
+                                    <div className="weverse-tabs" style={{ marginTop: 4 }}>
+                                        <button className={`weverse-tab ${cpostTab === "jiefu" ? "active" : ""}`} onClick={() => setCpostTab("jiefu")}>姐夫你别这样</button>
+                                        <button className={`weverse-tab ${cpostTab === "jiefubing" ? "active" : ""}`} onClick={() => setCpostTab("jiefubing")}>有姐夫病没姐夫命</button>
+                                    </div>
+                                    <div style={{ fontSize: 11, color: "#b88dc7", margin: "8px 0 12px" }}>💡 姐夫站是粉丝/辱追的投稿区，你只能围观和点开看评论</div>
+                                </>
+                            )}
+                            {!isJiefu && cfg?.canPost && (
                                 <button className="btn-primary compose-fab" onClick={() => setPostComposer({ platformKey: key })}>+ 发微博</button>
                             )}
                             {loading && <div className="loading-spinner"><div className="spinner"></div></div>}
@@ -3075,9 +3398,9 @@ const sendDM = async (fan, text, actionItem) => {
                             )}
                             {!forumLoading && filteredPosts.map((post, i) => {
                                 // 根据海后值/风险值生成舆论氛围标签
-                                const opinionTag = seaLevel > 60 ? { text: "⚡ 粉圈在讨论", color: "#fb923c" } :
+                                const opinionTag = currentRisk > 55 ? { text: "⚡ 粉圈在讨论", color: "#fb923c" } :
                                     currentRisk >= 5 ? { text: "🔍 有人扒料中", color: "#f472b6" } :
-                                    seaLevel > 30 ? { text: "👀 有些奇怪风向", color: "#a855f7" } :
+                                    currentRisk > 25 ? { text: "👀 有些奇怪风向", color: "#a855f7" } :
                                     { text: "🌱 安全", color: "#10b981" };
                                 return (
                                 <div key={i} className="forum-post" onClick={() => viewPost(post)}>
@@ -3432,44 +3755,75 @@ const sendDM = async (fan, text, actionItem) => {
                 </div>
             );
         }
-        // ========== 匿名小号 ==========
-        if (activeModal === "sns") {
+        // ========== 小号管理（可在 Twitter/TikTok/微博/ins 自主注册小号）==========
+        if (activeModal === "sns" || activeModal === "altmanager") {
+            const ALT_APPS = [
+                { key: "twitter", name: "Twitter", icon: "𝕏" },
+                { key: "tiktok", name: "TikTok", icon: "🎵" },
+                { key: "weibo", name: "微博", icon: "🌊" },
+                { key: "instagram", name: "Instagram", icon: "📷" }
+            ];
+            const anyReg = ALT_APPS.some(a => altAccounts[a.key]);
             const SNS_PRESETS = [
                 { label: "🗡️ 发黑帖撕对家", text: "用小号发黑帖攻击对家爱豆，带节奏踩一捧一" },
                 { label: "🧼 洗白自己", text: "用小号下场帮自己澄清黑料、引导风向洗白" },
                 { label: "🔥 带节奏拱火", text: "用小号在热帖下拱火，把粉圈骂战搅得更大" },
                 { label: "🤫 暗示恋情", text: "用小号暗戳戳暗示自己疑似恋爱，试探风向" }
             ];
-            const doSns = (text) => {
-                handleSNS(text);
-                setSnsInput("");
+            const doSns = (text) => { handleSNS(text); setSnsInput(""); };
+            const toggleReg = (k) => {
+                setAltAccounts(prev => ({ ...prev, [k]: !prev[k] }));
+                if (k === "tiktok") setTiktokAlt(v => !v);
             };
             return (
                 <div className="modal-overlay" onClick={() => setActiveModal(null)}>
                     <div className="modal-content" onClick={e => e.stopPropagation()}>
-                        <div className="modal-header"><h3>🎭 匿名小号</h3><button className="modal-close" onClick={() => setActiveModal(null)}>×</button></div>
-                        <div style={{ padding: 16 }}>
+                        <div className="modal-header"><h3>🎭 小号管理</h3><button className="modal-close" onClick={() => setActiveModal(null)}>×</button></div>
+                        <div style={{ padding: 16, overflowY: "auto" }}>
                             <div style={{ fontSize: 11, color: "#9d6db8", marginBottom: 12 }}>
-                                ⚠️ 小号下场有风险，被扒出来暴露风险会飙升。当前风险 {currentRisk}/10
+                                在下面四个软件中自主选择是否注册小号。小号下场有风险，被扒出来暴露风险会飙升。当前风险 {currentRisk}%
                             </div>
-                            {SNS_PRESETS.map((p, i) => (
-                                <button key={i} className="choice-btn" style={{ marginBottom: 8 }} onClick={() => doSns(p.text)}>{p.label}</button>
-                            ))}
-                            <textarea rows={3} placeholder="或自定义小号操作..." value={snsInput} onChange={e => setSnsInput(e.target.value)} style={{ width: "100%", background: "#ffffff", border: "1px solid #f3d5ed", borderRadius: 16, padding: 12, color: "#4a1d5a", marginTop: 8, marginBottom: 12 }} />
-                            <button className="btn-primary" style={{ width: "100%" }} onClick={() => { if (snsInput.trim()) doSns(snsInput.trim()); else alert("请选择或输入小号操作"); }}>🎭 用小号发布</button>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+                                {ALT_APPS.map(a => (
+                                    <div key={a.key} style={{ background: "#ffffff", borderRadius: 14, padding: 12, display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
+                                        <div style={{ fontSize: 22 }}>{a.icon}</div>
+                                        <div style={{ color: "#4a1d5a", fontWeight: "bold", fontSize: 13 }}>{a.name}</div>
+                                        <div style={{ fontSize: 10, color: altAccounts[a.key] ? "#10b981" : "#b88dc7" }}>{altAccounts[a.key] ? "✓ 已注册小号" : "未注册"}</div>
+                                        <button className={altAccounts[a.key] ? "btn-secondary" : "btn-primary"} style={{ width: "100%", padding: "6px 0", fontSize: 12 }} onClick={() => toggleReg(a.key)}>
+                                            {altAccounts[a.key] ? "注销小号" : "注册小号"}
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                            {anyReg ? (
+                                <>
+                                    <div style={{ fontSize: 12, color: "#a855f7", fontWeight: "bold", marginBottom: 8 }}>🎭 用小号操作</div>
+                                    {SNS_PRESETS.map((p, i) => (
+                                        <button key={i} className="choice-btn" style={{ marginBottom: 8 }} onClick={() => doSns(p.text)}>{p.label}</button>
+                                    ))}
+                                    <textarea rows={3} placeholder="或自定义小号操作..." value={snsInput} onChange={e => setSnsInput(e.target.value)} style={{ width: "100%", background: "#ffffff", border: "1px solid #f3d5ed", borderRadius: 16, padding: 12, color: "#4a1d5a", marginTop: 8, marginBottom: 12 }} />
+                                    <button className="btn-primary" style={{ width: "100%" }} onClick={() => { if (snsInput.trim()) doSns(snsInput.trim()); else alert("请选择或输入小号操作"); }}>🎭 用小号发布</button>
+                                </>
+                            ) : (
+                                <div style={{ textAlign: "center", color: "#b88dc7", fontSize: 12, padding: "12px 0" }}>先在上面注册至少一个小号，才能下场操作。</div>
+                            )}
                         </div>
                     </div>
                 </div>
             );
         }
-        // ========== 商城 ==========
+        // ========== 商城（礼物已并入：商品 / 送礼 两个区）==========
         if (activeModal === "shop") {
             return (
                 <div className="modal-overlay" onClick={() => setActiveModal(null)}>
                     <div className="modal-content" onClick={e => e.stopPropagation()}>
                         <div className="modal-header"><h3>🛒 商城 · 余额 {money}万</h3><button className="modal-close" onClick={() => setActiveModal(null)}>×</button></div>
                         <div style={{ padding: 16, overflowY: "auto" }}>
-                            {SHOP_ITEMS.map(item => (
+                            <div className="weverse-tabs" style={{ marginBottom: 12 }}>
+                                <button className={`weverse-tab ${shopTab === "shop" ? "active" : ""}`} onClick={() => setShopTab("shop")}>🛒 商品</button>
+                                <button className={`weverse-tab ${shopTab === "gift" ? "active" : ""}`} onClick={() => setShopTab("gift")}>🎁 送礼</button>
+                            </div>
+                            {shopTab === "shop" && SHOP_ITEMS.map(item => (
                                 <div key={item.id} style={{ background: "#ffffff", borderRadius: 16, padding: 12, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                     <div>
                                         <div style={{ color: "#4a1d5a", fontWeight: "bold" }}>{item.name}</div>
@@ -3478,6 +3832,27 @@ const sendDM = async (fan, text, actionItem) => {
                                     <button className="btn-secondary" onClick={() => handleBuy(item)}>💰 {item.price}万</button>
                                 </div>
                             ))}
+                            {shopTab === "gift" && (
+                                <>
+                                    <div style={{ marginBottom: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                        {FANS.map(fan => (
+                                            <button key={fan.id} className="btn-secondary" style={{ fontSize: 12, border: selectedGiftFan?.id === fan.id ? "1px solid #d946a8" : "1px solid transparent" }} onClick={() => setSelectedGiftFan(fan)}>
+                                                {fan.emoji} {fan.name}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    {GIFT_ITEMS.map(gift => (
+                                        <div key={gift.id} style={{ background: "#ffffff", borderRadius: 16, padding: 12, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+                                            onClick={() => { if (!selectedGiftFan) return alert("请先在上方点击选择要送礼的大粉！"); handleSendGift(selectedGiftFan, gift); }}>
+                                            <div>
+                                                <div style={{ color: "#4a1d5a", fontWeight: "bold" }}>{gift.name}</div>
+                                                <div style={{ fontSize: 11, color: "#9d6db8" }}>❤️+{gift.heartDelta}</div>
+                                            </div>
+                                            <div>💰 {gift.price}万</div>
+                                        </div>
+                                    ))}
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -3502,21 +3877,21 @@ const sendDM = async (fan, text, actionItem) => {
                                 <button className="btn-primary" style={{ flex: 1 }} onClick={() => handleCompany("求助")}>🆘 求助公司</button>
                                 <button className="btn-secondary" style={{ flex: 1 }} onClick={() => handleCompany("交涉")}>⚖️ 争取自主权</button>
                             </div>
-                            {currentRisk >= 5 && !companyContract && (
+                            {currentRisk >= 30 && !companyContract && (
                                 <div>
                                     <div style={{ fontSize: 10, color: "#fb923c", textAlign: "center", marginBottom: 8 }}>
-                                        ⚠️ 风险值{currentRisk}，公司正在施压……
+                                        ⚠️ 风险 {currentRisk}%，公司正在施压……
                                     </div>
                                     <button style={{ width: "100%", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.4)", color: "#f9a8d4", borderRadius: 16, padding: "10px 16px", cursor: "pointer", fontSize: 13 }}
                                         onClick={() => handleCompany("sign_contract")}>
-                                        📋 签署"形象管理协议"（风险-3 但公司管控你）
+                                        📋 签署"形象管理协议"（风险-15 但公司管控你）
                                     </button>
                                     <div style={{ fontSize: 10, color: "#b88dc7", textAlign: "center", marginTop: 6 }}>
-                                        签约后海后值增长变慢，但暴露风险立即压制
+                                        签约后暴露风险增长被压制，但公司会管控你的行程
                                     </div>
                                 </div>
                             )}
-                            {currentRisk >= 5 && companyContract && (
+                            {currentRisk >= 30 && companyContract && (
                                 <div style={{ fontSize: 11, color: "#b88dc7", textAlign: "center" }}>已签约，无法再签新约（除非重新谈判）</div>
                             )}
                         </div>
@@ -3547,7 +3922,7 @@ const sendDM = async (fan, text, actionItem) => {
                                 if (target) handleAskMoney(target);
                             }}>💸 开口要钱</button>
                             <div className="warning-text" style={{ fontSize: 10, color: "#f43f5e", textAlign: "center", marginTop: 12 }}>
-                                ⚠️ 可能需要付出代价，心动值可能下降
+                                ⚠️ 可能需要付出代价，好感度可能下降
                             </div>
                         </div>
                     </div>
@@ -3685,7 +4060,7 @@ const sendDM = async (fan, text, actionItem) => {
                         <div style={{ padding: 16 }}>
                             <RelationGraph fans={FANS} hearts={hearts} onSelectFan={(fan) => { setShowRelationGraph(false); setShowFanDetail(fan); }} />
                             <div style={{ fontSize: 11, color: "#b88dc7", textAlign: "center", marginTop: 12 }}>
-                                点击头像查看大粉详情 · 连线数值为心动值
+                                点击头像查看大粉详情 · 连线数值为好感度
                             </div>
                         </div>
                     </div>
@@ -3701,23 +4076,24 @@ const sendDM = async (fan, text, actionItem) => {
             const maxFan = FANS.find(f => f.id === maxFanId);
             const othersLow = FANS.filter(f => f.id !== maxFanId).every(f => hearts[f.id] < 40);
             const isSingleTarget = 攻略人数 === 1 && maxHeart >= 70 && othersLow;
-            const isSiegeRoute = isSingleTarget && seaLevel > 30;
+            const 高好感人数 = Object.values(hearts).filter(v => v >= 80).length;
+            const isSiegeRoute = isSingleTarget && 高好感人数 >= 2;
             
             // ===== 头衔生成系统 =====
             // 复合条件优先级判定
             const titles = [];
             if (isSiegeRoute) titles.push({ name: "💔 围剿玫瑰", desc: "你只爱一人，其余五位联手围剿了你" });
-            else if (seaLevel >= 80 && 攻略人数 >= 4) titles.push({ name: "👑 海后女皇", desc: "六条船全部点亮，至高无上的时间管理之神" });
-            else if (seaLevel >= 70 && currentRisk <= 3) titles.push({ name: "🦊 隐秘大师", desc: "海后值爆表却滴水不漏，狗仔都拍不到你" });
-            else if (currentRisk >= 8 && day <= 15) titles.push({ name: "💥 塌房艺术家", desc: `出道才${day}天就让组合面临解散，速度堪比流星` });
+            else if (攻略人数 >= 5) titles.push({ name: "👑 六人女帝", desc: "六条船全部点亮，至高无上的时间管理之神" });
+            else if (攻略人数 >= 4 && currentRisk <= 25) titles.push({ name: "🦊 隐秘大师", desc: "多线并行却滴水不漏，狗仔都拍不到你" });
+            else if (currentRisk >= 80 && day <= 15) titles.push({ name: "💥 塌房艺术家", desc: `出道才${day}天就让组合面临解散，速度堪比流星` });
             else if (攻略人数 >= 5 && fandomHeat >= 70) titles.push({ name: "🍑 人间水蜜桃", desc: "你游走在六个姐夫之间，他们甚至为你建了应援站" });
             else if (攻略人数 === 1 && maxHeart >= 85) titles.push({ name: `💘 ${maxFan?.name || "他"}的小公主`, desc: "你放弃了所有人，他在某个深夜对你说：'我不想只是你的粉丝了'" });
             else if (attrs.人气值 >= 85 && 攻略人数 === 0) titles.push({ name: "😇 纯爱战士", desc: "一心搞事业的清流爱豆，粉圈最干净的那位" });
             else if (antiCount >= 70 && fandomHeat >= 70) titles.push({ name: "🔥 黑红流量", desc: "黑粉和真粉数量五五开，热搜常驻嘉宾" });
             else if (companyContract?.signed && companyContract.control >= 2) titles.push({ name: "🔗 公司爱将", desc: "签了重磅协议，安全但你的灵魂也被一并打包" });
             else if (attrs.人气值 < 40 && 攻略人数 >= 2) titles.push({ name: "🎣 私联大师", desc: "事业糊了但粉圈生态学满级，你才是真正的赢家" });
-            else if (seaLevel >= 50 && 攻略人数 >= 3) titles.push({ name: "💅 时间管理大师", desc: "三线并行毫不慌张，姐夫们对你又恨又爱" });
-            else if (seaLevel >= 30) titles.push({ name: "🐟 海底小鱼苗", desc: "已经开始养鱼但还没完全展开，前途无量" });
+            else if (攻略人数 >= 3) titles.push({ name: "💅 时间管理大师", desc: "三线并行毫不慌张，姐夫们对你又恨又爱" });
+            else if (攻略人数 >= 2) titles.push({ name: "🐟 初露锋芒", desc: "已经开始多线联系但还没完全展开，前途无量" });
             else titles.push({ name: "🌱 初出茅庐", desc: "粉圈生态还没摸清，但已经迈出第一步" });
             // 副称号（玩家性格底色）
             const traitBadges = {
@@ -3793,8 +4169,8 @@ const sendDM = async (fan, text, actionItem) => {
                                 
                                 {/* 数值条 */}
                                 {[
-                                    { label: "海后值", value: seaLevel, max: 100, color: "#ec4899" },
-                                    { label: "暴露风险", value: currentRisk, max: 10, color: "#f472b6" },
+                                    { label: "粉圈热度", value: fandomHeat, max: 100, color: "#ec4899" },
+                                    { label: "暴露风险", value: currentRisk, max: 100, color: "#f472b6" },
                                     { label: "人气", value: attrs.人气值, max: 100, color: "#a855f7" },
                                     { label: "公司好感", value: companyFavor, max: 100, color: "#8b5cf6" }
                                 ].map((bar, i) => (
@@ -3828,7 +4204,6 @@ const sendDM = async (fan, text, actionItem) => {
                                 }} className="btn-secondary" style={{ flex: 1 }}>📥 下载卡片</button>
                                 <button onClick={() => { deleteGameFromSlot(slotId); window.location.reload(); }} className="btn-primary" style={{ flex: 1 }}>🔄 重玩</button>
                             </div>
-                            {specialEnding && false /* legacy 占位，保留兼容 */}
                             {isSiegeRoute && (
                                 <div style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.4)", borderRadius: 12, padding: 10, marginTop: 14, fontSize: 11, color: "#f9a8d4", lineHeight: 1.6 }}>
                                     🔥 <b>五人联合围剿</b>：你只在乎{maxFan?.name}，另外五位察觉了异样并联合起来。Pann出现了爆料贴，{maxFan?.name}站出来护你却反被说成"证据"。这场围剿，是你选择的代价。
@@ -3844,7 +4219,7 @@ const sendDM = async (fan, text, actionItem) => {
         if (activeModal === "live") {
             return (
                 <LiveModal
-                    char={char} seaLevel={seaLevel} currentRisk={currentRisk}
+                    char={char} currentRisk={currentRisk}
                     fandomHeat={fandomHeat} antiCount={antiCount} coupleExposure={coupleExposure}
                     liveMessages={liveMessages} setLiveMessages={setLiveMessages}
                     liveActive={liveActive} setLiveActive={setLiveActive}
@@ -3911,33 +4286,73 @@ const sendDM = async (fan, text, actionItem) => {
                     </div>
                 </div>
             )}
-            {/* 【心动邂逅】偶遇系统 */}
+            {/* 【心动邂逅 · 彩蛋】完全独立于主线：只展示一段独处小剧场，不改任何主线数值 */}
             {showEncounter && (
-                <div className="modal-overlay" onClick={() => { setShowEncounter(false); setEncounterFan(null); }}>
-                    <div className="modal-content modal-anim" onClick={e => e.stopPropagation()}>
+                <div className="modal-overlay" onClick={closeEncounter}>
+                    <div className="modal-content modal-anim" onClick={e => e.stopPropagation()} style={{ maxHeight: "88vh", overflowY: "auto" }}>
                         <div className="modal-header">
                             <h3>💗 心动邂逅 · {getWorld(currentWorld).name}</h3>
-                            <button className="modal-close" onClick={() => { setShowEncounter(false); setEncounterFan(null); }}>×</button>
+                            <button className="modal-close" onClick={closeEncounter}>×</button>
                         </div>
-                        {!encounterFan ? (
-                            <>
-                                <div className="encounter-intro">挑一位大粉，触发一场只属于你们的独处。</div>
-                                <div className="encounter-grid">
-                                    {FANS.map(fan => (
-                                        <div key={fan.id} className="enc-fan" onClick={() => setEncounterFan(fan)}>
-                                            <div className="enc-emoji" style={{ boxShadow: `0 0 20px -8px ${fan.color}` }}>{fan.emoji}</div>
-                                            <div className="enc-name">{fan.name}</div>
-                                            <div className="enc-type">{fan.type}</div>
-                                            <div className="enc-heart">
-                                                <span>💕</span>
-                                                <div className="enc-heart-bar"><div style={{ width: `${hearts[fan.id]}%`, height: "100%", background: fan.color }} /></div>
-                                                <span>{hearts[fan.id]}</span>
-                                            </div>
+
+                        {/* ③ 已生成场景 / 生成中 / 生成失败 */}
+                        {(encounterScene || encounterLoading || encounterError) ? (
+                            <div style={{ padding: 18 }}>
+                                {encounterLoading && (
+                                    <div style={{ textAlign: "center", padding: "30px 0" }}>
+                                        <div className="loading-spinner"><div className="spinner"></div></div>
+                                        <div style={{ fontSize: 12, color: "#b88dc7", marginTop: 12 }}>
+                                            正在和 {encounterFan?.name} 不期而遇……
                                         </div>
-                                    ))}
+                                    </div>
+                                )}
+                                {encounterError && !encounterLoading && (
+                                    <div style={{ textAlign: "center", padding: "24px 0" }}>
+                                        <div style={{ fontSize: 30, marginBottom: 10 }}>🍃</div>
+                                        <div style={{ fontSize: 13, color: "#9d6db8", marginBottom: 16 }}>{encounterError}</div>
+                                        <button className="btn-secondary" style={{ width: "100%" }} onClick={() => { setEncounterError(null); }}>返回重选</button>
+                                    </div>
+                                )}
+                                {encounterScene && !encounterLoading && (
+                                    <>
+                                        <div className="enc-chosen-fan" style={{ marginBottom: 12 }}>
+                                            <span className="ecf-emoji">{encounterScene.fan.emoji}</span>
+                                            <span className="ecf-name">{encounterScene.loc.emoji} {encounterScene.loc.title}</span>
+                                        </div>
+                                        <div style={{ fontSize: 13, color: "#4a1d5a", lineHeight: 1.95, whiteSpace: "pre-wrap" }}>
+                                            {encounterScene.text}
+                                        </div>
+                                        <div style={{ fontSize: 10, color: "#b88dc7", textAlign: "center", margin: "16px 0 12px", lineHeight: 1.6 }}>
+                                            ✨ 这是一段只属于你们的插曲——它不会改变主线剧情、天数或任何数值
+                                        </div>
+                                        <button className="btn-primary" style={{ width: "100%" }} onClick={closeEncounter}>收好这段回忆</button>
+                                    </>
+                                )}
+                            </div>
+                        ) : !encounterFan ? (
+                            /* ① 选人 */
+                            <>
+                                <div className="encounter-intro">挑一位大粉，触发一场只属于你们的独处。<br/><span style={{ fontSize: 11, color: "#b88dc7" }}>每天每位大粉只有一次偶遇机会 · 纯彩蛋，不影响主线</span></div>
+                                <div className="encounter-grid">
+                                    {FANS.map(fan => {
+                                        const used = isEncounterUsed(fan.id);
+                                        return (
+                                            <div key={fan.id} className="enc-fan" onClick={() => { if (used) { setToastMsg(`今天已和 ${fan.name} 偶遇过了`); setTimeout(() => setToastMsg(""), 2000); } else { setEncounterFan(fan); } }} style={used ? { opacity: 0.4, filter: "grayscale(1)" } : undefined}>
+                                                <div className="enc-emoji" style={{ boxShadow: `0 0 20px -8px ${fan.color}` }}>{fan.emoji}</div>
+                                                <div className="enc-name">{fan.name}{used && " ✓"}</div>
+                                                <div className="enc-type">{used ? "今日已偶遇" : fan.type}</div>
+                                                <div className="enc-heart">
+                                                    <span>💕</span>
+                                                    <div className="enc-heart-bar"><div style={{ width: `${hearts[fan.id]}%`, height: "100%", background: fan.color }} /></div>
+                                                    <span>{hearts[fan.id]}</span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             </>
                         ) : (
+                            /* ② 选地点 */
                             <>
                                 <button className="enc-back" onClick={() => setEncounterFan(null)}>‹ 换一位</button>
                                 <div className="enc-chosen-fan">
@@ -3979,24 +4394,59 @@ const sendDM = async (fan, text, actionItem) => {
                 </div>
             )}
             
-            {/* 顶部状态栏 */}
-            <div className="status-bar">
-                <span className="time">23:41</span>
-                <span>📶 🔋 89%</span>
-            </div>
-            
-            {/* 主头部 */}
-            <div className="main-header">
-                <div className="day-badge">DAY {day}</div>
-                <div className="sea-badge" title={`海后值：${seaLevel}`}>
-                    {seaLevel >= 80 ? "🌊 海后女皇" : seaLevel >= 60 ? "🐟 时间管理中" : seaLevel >= 30 ? "💋 有点小心思" : "😇 纯情小白"}
+            {/* 【结局系统】达成结局 → 展示结局正文与成就，玩家可选择继续剧情或结束本周目 */}
+            {triggeredEnding && (
+                <div className="modal-overlay" style={{ zIndex: 10001 }}>
+                    <div className="modal-content modal-anim" onClick={e => e.stopPropagation()} style={{ maxWidth: 420, maxHeight: "88vh", overflowY: "auto" }}>
+                        <div className="modal-header">
+                            <h3>🎬 {triggeredEnding.type} · 结局达成</h3>
+                        </div>
+                        <div style={{ padding: 18 }}>
+                            <h2 style={{ fontSize: 18, color: "#a855f7", marginBottom: 4 }}>{triggeredEnding.title}</h2>
+                            <div style={{ fontSize: 11, color: "#b88dc7", marginBottom: 14 }}>【结局成就】{triggeredEnding.achievement}</div>
+                            <div style={{ fontSize: 13, color: "#4a1d5a", lineHeight: 1.9, whiteSpace: "pre-wrap", marginBottom: 18 }}>{triggeredEnding.text}</div>
+                            <div style={{ fontSize: 11, color: "#9d6db8", marginBottom: 12 }}>
+                                已解锁结局：{endingsUnlocked.length} / {ENDINGS.length} · 第 {cycleCount + 1} 周目
+                            </div>
+                            <div style={{ display: "flex", gap: 10 }}>
+                                <button className="btn-secondary" style={{ flex: 1 }} onClick={continueAfterEnding}>继续剧情</button>
+                                <button className="btn-primary" style={{ flex: 1 }} onClick={endCurrentCycle}>结束本周目</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                {currentEvent && <div className="sea-badge" style={{ background: "rgba(225,29,72,0.2)" }}>{currentEvent.name}</div>}
+            )}
+            {/* 【每日总结】一天结束时弹出的当天总结卡 */}
+            {dailySummary && (
+                <div className="modal-overlay" onClick={() => setDailySummary(null)} style={{ zIndex: 10000 }}>
+                    <div className="modal-content modal-anim" onClick={e => e.stopPropagation()} style={{ maxWidth: 380 }}>
+                        <div className="modal-header"><h3>🌙 第 {dailySummary.day} 天 · 每日总结</h3><button className="modal-close" onClick={() => setDailySummary(null)}>×</button></div>
+                        <div style={{ padding: 18 }}>
+                            <div style={{ fontSize: 13, color: "#4a1d5a", lineHeight: 1.7, whiteSpace: "pre-wrap", marginBottom: 14 }}>{dailySummary.text}</div>
+                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 11, color: "#9d6db8" }}>
+                                <span>⚡ 暴露风险 {dailySummary.risk}%</span>
+                                <span>🔥 粉圈热度 {dailySummary.fandom}</span>
+                            </div>
+                            <button className="btn-primary" style={{ width: "100%", marginTop: 16 }} onClick={() => setDailySummary(null)}>进入第 {dailySummary.day + 1} 天</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* 顶部状态栏：按需求「顶部仅保留时间变化」——只显示随剧情推进的时间 */}
+            <div className="status-bar">
+                <span className="time">DAY {day} · {gameClock(day)}</span>
             </div>
             
-            {/* 风险标签 */}
-            <div className={`risk-badge ${riskClass}`} style={{ margin: "0 16px 8px" }} title={`暴露风险：${currentRisk}/10`}>
-                {riskText}：{currentRisk >= 8 ? "狗仔已盯上你" : currentRisk >= 6 ? "小号议论纷纷" : currentRisk >= 4 ? "圈内有些风声" : currentRisk >= 2 ? "略有蛛丝马迹" : "一切如常"}
+            {/* 主头部：仅保留当前进行中的活动名（DAY 已上移到顶部时间） */}
+            {currentEvent && (
+                <div className="main-header">
+                    <div className="sea-badge" style={{ background: "rgba(225,29,72,0.2)" }}>{currentEvent.name}</div>
+                </div>
+            )}
+            
+            {/* 风险标签（百分制 5 级） */}
+            <div className={`risk-badge ${riskClass}`} style={{ margin: "0 16px 8px" }} title={`暴露风险：${currentRisk}%`}>
+                {riskLevelInfo.star} {riskText} {currentRisk}%：{currentRisk >= 80 ? "全网审判，塌房级" : currentRisk >= 50 ? "大规模脱粉，需发声明" : currentRisk >= 20 ? "热贴讨论，公司介入" : currentRisk >= 5 ? "小范围讨论" : "无人察觉"}
             </div>
             
             {/* 【光夜变奏】非主世界预览提示（此时剧情与存档仍锚定常驻主世界，仅视觉换肤预览） */}
@@ -4005,7 +4455,7 @@ const sendDM = async (fan, text, actionItem) => {
                     border: "1px solid var(--gold-line)", background: "var(--glass)",
                     display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                     <span style={{ fontSize: 11, color: "var(--gold)", lineHeight: 1.5 }}>
-                        🌌 当前观测：{getWorld(currentWorld).name} · 序章筹备中（剧情与存档仍在常驻主世界）
+                        🌌 当前观测：{getWorld(currentWorld).name} · 序章筹备中（剧情与存档仍在主世界「璀璨人生」）
                     </span>
                     <button className="btn-secondary" style={{ flex: "0 0 auto", padding: "6px 12px" }}
                         onClick={() => switchWorld("main")}>返回主世界</button>
@@ -4014,22 +4464,13 @@ const sendDM = async (fan, text, actionItem) => {
             {/* 主内容区 */}
             {renderContent()}
             
-            {/* 底部 Tab 栏 */}
+            {/* 底部 Tab 栏：按需求删除「主线/手机/状态」（首页已有这三个入口），仅保留首页与偶遇 */}
             <div className="bottom-tabs">
                 <button className={`tab-btn ${activeTab === "home" ? "active" : ""}`} onClick={() => setActiveTab("home")}>
                     <span>⌂</span><span>首页</span>
                 </button>
-                <button className={`tab-btn ${activeTab === "story" ? "active" : ""}`} onClick={() => setActiveTab("story")}>
-                    <span>✦</span><span>主线</span>
-                </button>
                 <button className={`tab-btn ${activeTab === "relation" ? "active" : ""}`} onClick={() => setActiveTab("relation")}>
                     <span>♡</span><span>偶遇</span>
-                </button>
-                <button className={`tab-btn ${activeTab === "phone" ? "active" : ""}`} onClick={() => setActiveTab("phone")}>
-                    <span>📱</span><span>手机</span>
-                </button>
-                <button className={`tab-btn ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>
-                    <span>≡</span><span>状态</span>
                 </button>
             </div>
             {/* 【观测次元】跃迁悬浮按钮（Dock 右上方） */}
@@ -4134,7 +4575,7 @@ function SlotSelector({ onSelectSlot, onCreateNew, onLogout }) {
             <div style={{ maxWidth: 400, margin: "0 auto", textAlign: "center" }}>
                 <div style={{ fontSize: 56, marginBottom: 16 }}>💫</div>
                 <h1 style={{ fontSize: 32, fontWeight: "bold", color: "#4a1d5a", marginBottom: 8 }}>姐夫大作战 V16</h1>
-                <p style={{ color: "#9d6db8", fontSize: 13, marginBottom: 30 }}>终极完整版 · AI全生成 · 海后联动 · 大粉互撕 · 完整社交平台</p>
+                <p style={{ color: "#9d6db8", fontSize: 13, marginBottom: 30 }}>终极完整版 · AI全生成 · 平行时空 · 大粉互撕 · 完整社交平台</p>
                 <button onClick={onLogout} className="btn-secondary" style={{ marginBottom: 20 }}>🚪 退出登录</button>
                 {lastData && (
                     <button
@@ -4394,17 +4835,18 @@ function CreateCharacter({ slotId, onComplete, onBack }) {
         }
         
         // 随机生成初始属性
+        // 需求：人气/国民度/时尚初始 30；资金初始 10 万；颜值固定；智商情商固定
         const randomAttrs = {
-            人气值: Math.floor(Math.random() * 31) + 65,
-            颜值: Math.floor(Math.random() * 29) + 70,
-            国民度: Math.floor(Math.random() * 41) + 50,
-            时尚度: Math.floor(Math.random() * 48) + 45,
-            金钱值: Math.floor(Math.random() * 56) + 30,
-            vocal: Math.floor(Math.random() * 31) + 60,
-            dance: Math.floor(Math.random() * 31) + 60,
-            rap: Math.floor(Math.random() * 31) + 50,
-            iq: Math.floor(Math.random() * 21) + 75,
-            eq: Math.floor(Math.random() * 21) + 70
+            人气值: 30,
+            颜值: Math.floor(Math.random() * 21) + 55,
+            国民度: 30,
+            时尚度: 30,
+            金钱值: 10,
+            vocal: Math.floor(Math.random() * 31) + 55,
+            dance: Math.floor(Math.random() * 31) + 55,
+            rap: Math.floor(Math.random() * 31) + 45,
+            iq: Math.floor(Math.random() * 21) + 70,
+            eq: Math.floor(Math.random() * 21) + 65
         };
         
         return (
@@ -4438,11 +4880,15 @@ function CreateCharacter({ slotId, onComplete, onBack }) {
                         const gameData = {
                             char: charForm, day: 1, teammates,
                             hearts: Object.fromEntries(FANS.map(f => [f.id, 30])),
-                            seaLevel: 0, unlocked: [],
-                            currentStory: initStory, currentChoices: INIT_CHOICES, currentRisk: 0,
+                            unlocked: [],
+                            currentStory: initStory, currentChoices: INIT_CHOICES, currentRisk: 0, suspicion: 0,
                             history: [initStory], schedules: {},
-                            attrs: randomAttrs, money: randomAttrs.金钱值,
-                            fandomHeat: 65, antiCount: 30, fanEmotions: initFanEmotions(),
+                            attrs: randomAttrs, money: 10,
+                            fandomHeat: Math.floor(Math.random() * 41) + 30,   // 粉圈热度 30-70 随机
+                            antiCount: Math.floor(Math.random() * 8) + 2,      // 黑粉占比 <10%
+                            fanEmotions: initFanEmotions(),
+                            altAccounts: { twitter: false, tiktok: false, weibo: false, instagram: false },
+                            encounterUsed: {}, endingsUnlocked: [], cycleCount: 0,
                             activeEvents: [], currentSchedule: generateRandomSchedule(1),
                             scheduleMap: {}, dailyPlan: { morning: null, noon: null, evening: null },
                             dmReadStatus: {}, dmHistories: {}, coupleExposure: null, socialFeeds: {},
@@ -4452,7 +4898,7 @@ function CreateCharacter({ slotId, onComplete, onBack }) {
                         saveGameToSlot(slotId, gameData);
                         syncToCloud(slotId, gameData);
                         onComplete(slotId, gameData);
-                    }} className="btn-primary" style={{ width: "100%", padding: 14 }}>🎮 开始海后生涯</button>
+                    }} className="btn-primary" style={{ width: "100%", padding: 14 }}>🎮 开启璀璨人生</button>
                     <button onClick={() => setStep(step - 1)} className="btn-secondary" style={{ width: "100%", marginTop: 10 }}>← 返回修改</button>
                 </div>
             </div>
@@ -4636,4 +5082,5 @@ function App() {
 // 渲染
 
 export default App;
+
 
