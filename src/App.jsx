@@ -223,6 +223,54 @@ function evaluateEnding(state) {
   return null;
 }
 
+// ============================================================
+// 【独立成就系统】与结局解耦的里程碑成就：游戏过程中随状态达成即解锁（带 toast）。
+// cond 收到的 state 与 evaluateEnding 同源（buildEndingState），额外附带 cycleCount / achievementsUnlocked。
+// 成就是"粘性"的：一旦解锁永久保留，可跨周目累积。图鉴里未解锁时显示 hint 而非 desc。
+// ============================================================
+const ACHIEVEMENTS = [
+  { id: "ac_first_unlock", icon: "🎣", name: "初次私联", desc: "拿到了第一位大粉的私人联系方式。", hint: "和某位大粉的关系足够近，走出第一步。",
+    cond: s => s.unlockedCount >= 1 },
+  { id: "ac_three_lines", icon: "🕸️", name: "时间管理", desc: "同时私联 3 位大粉，游刃有余。", hint: "同时私联多位大粉。",
+    cond: s => s.unlockedCount >= 3 },
+  { id: "ac_six_lines", icon: "👑", name: "六线女帝", desc: "六条船全部点亮，粉圈时间管理之神。", hint: "私联全部六位大粉。",
+    cond: s => s.unlockedCount >= 6 },
+  { id: "ac_soulmate", icon: "💞", name: "命中注定", desc: "对某位大粉的好感度突破 95。", hint: "把某位大粉的好感度推到极致。",
+    cond: s => s.maxHeart >= 95 },
+  { id: "ac_top", icon: "🔥", name: "顶流", desc: "人气值达到 90，一线顶流。", hint: "把人气值做到很高。",
+    cond: s => (s.attrs?.人气值 ?? 0) >= 90 },
+  { id: "ac_national", icon: "🇰🇷", name: "国民女神", desc: "国民度达到 90，全民偶像。", hint: "把国民度做到很高。",
+    cond: s => (s.attrs?.国民度 ?? 0) >= 90 },
+  { id: "ac_fashion", icon: "💃", name: "时尚 Icon", desc: "时尚度达到 90，红毯常客。", hint: "把时尚度做到很高。",
+    cond: s => (s.attrs?.时尚度 ?? 0) >= 90 },
+  { id: "ac_rich", icon: "💰", name: "财富自由", desc: "金钱值达到 90，甲方变乙方。", hint: "把金钱值攒到很高。",
+    cond: s => (s.attrs?.金钱值 ?? 0) >= 90 },
+  { id: "ac_brink", icon: "💣", name: "塌房边缘", desc: "暴露风险一度冲到 80，命悬一线。", hint: "把暴露风险作到极高（然后祈祷）。",
+    cond: s => s.currentRisk >= 80 },
+  { id: "ac_survive", icon: "🧯", name: "化险为夷", desc: "从塌房边缘全身而退，把风险压回安全区。", hint: "在经历高危之后，把风险重新降下来。",
+    cond: s => s.achievementsUnlocked.includes("ac_brink") && s.currentRisk < 30 },
+  { id: "ac_blackred", icon: "🌶️", name: "黑红也是红", desc: "黑粉占比与粉圈热度同时飙高。", hint: "在巨大争议中依然保持超高热度。",
+    cond: s => (s.antiCount ?? 0) >= 60 && (s.fandomHeat ?? 0) >= 70 },
+  { id: "ac_pure", icon: "😇", name: "纯爱战士", desc: "谁都没私联，却把事业做到了顶。", hint: "一个都不撩、只搞事业，还得混得好。",
+    cond: s => s.unlockedCount === 0 && (s.attrs?.人气值 ?? 0) >= 85 },
+  { id: "ac_persist", icon: "📅", name: "坚持不懈", desc: "一个周目坚持到了第 30 天。", hint: "在同一周目里活得够久。",
+    cond: s => (s.day ?? 0) >= 30 },
+  { id: "ac_collector", icon: "📚", name: "结局收藏家", desc: "累计解锁 5 个不同结局。", hint: "解锁足够多的结局。",
+    cond: s => s.endingsUnlocked.length >= 5 },
+  { id: "ac_completionist", icon: "🏆", name: "全结局达成", desc: "解锁全部结局，真·通关。", hint: "解锁所有结局。",
+    cond: s => s.endingsUnlocked.length >= ENDINGS.length },
+  { id: "ac_reincarnation", icon: "🔁", name: "轮回者", desc: "开启了第 2 个周目，走上重来的路。", hint: "结束一个周目，再来一次。",
+    cond: s => (s.cycleCount ?? 0) >= 1 }
+];
+// 结局类型元信息（图鉴分组 + 未解锁时的模糊提示）
+const ENDING_TYPE_META = {
+  "HE":   { label: "单人结局 · Happy End", hint: "与某位大粉修成正果" },
+  "公共": { label: "公共结局",             hint: "六人关系的某种收束" },
+  "BE":   { label: "Bad End",              hint: "关系破裂 / 塌房的结局" },
+  "OE":   { label: "Open End",             hint: "悬而未决的开放结局" },
+  "TE":   { label: "隐藏结局 · True End",  hint: "达成特定隐藏条件才会解锁" }
+};
+
 // 第1天开场剧情：用函数动态注入主角艺名/花名，避免出现"主控"游戏术语
 function buildInitStory(char) {
     const name = char?.artistName || char?.nickname || "晨晨";
@@ -504,6 +552,7 @@ function migrateSaveData(raw) {
     if (data.altAccounts === undefined) data.altAccounts = { twitter: false, tiktok: false, weibo: false, instagram: false };
     if (data.encounterUsed === undefined) data.encounterUsed = {};
     if (data.endingsUnlocked === undefined) data.endingsUnlocked = [];
+    if (data.achievementsUnlocked === undefined) data.achievementsUnlocked = [];
     if (data.cycleCount === undefined) data.cycleCount = 0;
     // ===== V20 迁移：时段制 + 熟练度 + 私联门槛 =====
     if (!data.schemaV20) {
@@ -712,6 +761,20 @@ function summarizeScheduleEntry(entry) {
     // 旧随机格式：{ name }
     return entry.name || "";
 }
+
+// ============================================================
+// 【主线节拍器 · V21】平衡「日程系统」与「主线剧情」
+// 问题：日程闸门 + 剧情围绕日程展开之后，AI 每一拍都在写训练/营业流水账，
+//       神秘联系人、大粉线、危机事件（真正的主线）没有任何「必须推进」的信号，
+//       会无限停滞 —— 日程把主线饿死了。
+// 方案：给主线装一个节拍器。连续 MAINLINE_PUSH_AFTER 拍没有实质主线进展
+//       （好感/信任变化、私联、危机发酵、特殊事件都算「动了」），下一拍就
+//       强制要求后端/模型推进主线，日程退为背景板。任何来源的好感变化
+//       （剧情结算、私聊、送礼、通话）都会把怠速清零 —— 玩家主动经营关系，
+//       本身就是在推主线，不该再被系统追着强推。
+// ============================================================
+const MAINLINE_PUSH_AFTER = 2;   // 连续 2 拍没动主线 → 第 3 拍强制推进
+const MAINLINE_IDLE_CAP = 9;     // 怠速计数上限（防无限增长，也避免指令文案数字失真）
 
 // ============================================================
 // 社交引擎：计数解析/格式化 + AI内容归一化 + 平台配置
@@ -1448,6 +1511,8 @@ function GameApp({ slotId, initialData, onBack }) {
     const [fanEmotions, setFanEmotions] = React.useState(initialData.fanEmotions || initFanEmotions());
     const [dmReadStatus, setDmReadStatus] = React.useState(initialData.dmReadStatus || {});
     const [dmHistories, setDmHistories] = React.useState(initialData.dmHistories || {});
+    // 【V22】DM 聊天记忆：每位大粉记住"她对他说过的实质消息"（纯玩家话，最近8条），喂给后端做召回
+    const [dmMemory, setDmMemory] = React.useState(initialData.dmMemory || {});
     
     // 世界状态
     // 需求：删除海后值；暴露风险改百分制(0-100)；黑粉改百分比(初始<10%)；粉圈热度初始 30-70 随机
@@ -1489,8 +1554,10 @@ function GameApp({ slotId, initialData, onBack }) {
     // 熟练度：日程不直接加属性，练同一条线累计到 6 才由后端兑换 +1。这里存后端算好的进度。
     const [proficiency, setProficiency] = React.useState(initialData.proficiency || emptyProficiency());
     const [lastTrainDay, setLastTrainDay] = React.useState(initialData.lastTrainDay || {}); // 每条赛道最后训练日（后端算停练衰减用）
-    const [lastUnlockDay, setLastUnlockDay] = React.useState(initialData.lastUnlockDay ?? 0); // 上次私联的天数（仅作存档记录，不再有冷却）
-    const [interactionCount, setInteractionCount] = React.useState(initialData.interactionCount || {}); // 与各大粉的实质交集次数（私联的"铺垫"门槛）
+    const [lastUnlockDay, setLastUnlockDay] = React.useState(initialData.lastUnlockDay ?? 0); // 上次私联的天数（后端算 7 天冷却）
+    const [interactionCount, setInteractionCount] = React.useState(initialData.interactionCount || {}); // 与各大粉的实质交集次数（私联门槛之一）
+    // 【主线节拍器 · V21】主线怠速计数：连续多少拍剧情没有实质主线进展（跨天累计，随存档持久化）
+    const [mainlineIdle, setMainlineIdle] = React.useState(initialData.mainlineIdle ?? 0);
     const [currentSchedule, setCurrentSchedule] = React.useState(initialData.currentSchedule || generateRandomSchedule(1));
     const [activeEvents, setActiveEvents] = React.useState(initialData.activeEvents || []);
     const [coupleExposure, setCoupleExposure] = React.useState(initialData.coupleExposure || null);
@@ -1526,6 +1593,10 @@ function GameApp({ slotId, initialData, onBack }) {
     const [endingsUnlocked, setEndingsUnlocked] = React.useState(initialData.endingsUnlocked || []);
     const [cycleCount, setCycleCount] = React.useState(initialData.cycleCount || 0);
     const [triggeredEnding, setTriggeredEnding] = React.useState(null);
+    // 【成就 + 结局图鉴】独立成就(跨周目累积) + 图鉴界面的 Tab / 正在回看的结局
+    const [achievementsUnlocked, setAchievementsUnlocked] = React.useState(initialData.achievementsUnlocked || []);
+    const [galleryTab, setGalleryTab] = React.useState("endings");   // "endings" | "achievements"
+    const [galleryReading, setGalleryReading] = React.useState(null); // 正在回看正文的已解锁结局对象
     const [encounterFan, setEncounterFan] = React.useState(null);
     // 【偶遇】每天每位男主仅有一次机会：记录 { [day]: [fanId,...] }
     const [encounterUsed, setEncounterUsed] = React.useState(initialData.encounterUsed || {});
@@ -1776,7 +1847,13 @@ function GameApp({ slotId, initialData, onBack }) {
             currentWorld, altAccounts, encounterUsed, endingsUnlocked, cycleCount,
             // V20 时段/熟练度/私联
             slotsDone, proficiency, lastTrainDay, lastUnlockDay, interactionCount,
-            schemaV19: true, schemaV20: true
+            // V21 主线节拍器
+            mainlineIdle,
+            // V22 DM 聊天记忆
+            dmMemory,
+            // 成就（跨周目累积）
+            achievementsUnlocked,
+            schemaV19: true, schemaV20: true, schemaV21: true
         };
         const r = saveGameToSlot(slotId, saveData);
         if (r && r.ok === false) {
@@ -1793,7 +1870,7 @@ function GameApp({ slotId, initialData, onBack }) {
         attrs, money, teammates, fandomHeat, antiCount, fanEmotions, activeEvents, currentSchedule, dmReadStatus, dmHistories,
         coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan,
         currentWorld, altAccounts, encounterUsed, endingsUnlocked, cycleCount,
-        slotsDone, proficiency, lastTrainDay, lastUnlockDay, interactionCount]);
+        slotsDone, proficiency, lastTrainDay, lastUnlockDay, interactionCount, mainlineIdle, dmMemory, achievementsUnlocked]);
     
     // 每日推进
     React.useEffect(() => {
@@ -1823,6 +1900,14 @@ function GameApp({ slotId, initialData, onBack }) {
     // 【好感度】现实约束：单次加减平常≤5，特殊事件≤10（尤其男主好感度不可大幅跳变）
     const updateHearts = (changes, special = false) => {
         if (!changes) return;
+        // 【主线节拍器 · V21】任何来源的好感变化（剧情结算、私聊、送礼、视频通话、直播、DM…）
+        // 都在这里汇成一个漏斗 → 统一算作「主线动了一拍」，怠速清零。
+        // 玩家主动经营大粉关系，本身就是在推主线，不需要系统再追着强推。
+        const moved = Object.entries(changes).some(([id, d]) => {
+            const v = Number(d);
+            return Number.isFinite(v) && v !== 0 && FANS.some(f => f.id === id);
+        });
+        if (moved) setMainlineIdle(0);
         const cap = special ? 10 : 5;
         setHearts(prev => {
             const next = { ...prev };
@@ -1912,33 +1997,84 @@ function GameApp({ slotId, initialData, onBack }) {
         });
     };
 
-    // ⭐【日程系统 · V20】确认今日行程 = 「锁定当天日程」，不再一次性结算属性。
-    // 日程锁定后：① 只即时结算资金收入；② 剧情将围绕这份日程逐时段展开；
-    // ③ 技能训练只累积熟练度（后端算），连续做够 6 次才兑换 +1 属性。
+    // 【实质交集名单 · V21】contactFans = 已私联 ∪ 有过实质互动（interactionCount > 0）的大粉。
+    // 随每次剧情请求发给后端，两个用途：
+    //   ① 主线强推时，优先安排这些「已经和玩家有交集」的大粉登场，剧情才接得上；
+    //   ② 后端数值裁剪时据此校验好感变化对象 —— 名单外的大粉不该突然大幅动心
+    //     （前端在结算处同样限 ±1 做安全网，见 continueStory）。
+    const getContactFans = () => {
+        const set = new Set(unlocked);
+        Object.entries(interactionCount || {}).forEach(([id, n]) => { if ((Number(n) || 0) > 0) set.add(id); });
+        return FANS.filter(f => set.has(f.id)).map(f => f.id);
+    };
+
+    // ⭐【日程系统 · V20/V21】锁定当天日程的公共通道 —— confirmDailyPlan（手动确认）与
+    // reuseLastPlan（一键沿用）共用。日程锁定后：① 只即时结算资金收入；
+    // ② 剧情将围绕这份日程逐时段展开；③ 技能训练只累积熟练度（后端算），连续做够 6 次才兑换 +1 属性。
+    const lockPlanForToday = (plan, { reused = false } = {}) => {
+        const cleanPlan = { morning: plan?.morning || null, noon: plan?.noon || null, evening: plan?.evening || null };
+        const picks = SCHEDULE_SLOTS.map(s => findScheduleActivity(cleanPlan[s.key])).filter(Boolean);
+        if (picks.length === 0) return null;
+        // 唯一的即时结算：资金收入（品牌活动等）。属性/风险/粉圈一律不在此加，交给剧情与熟练度。
+        let moneyDelta = 0;
+        picks.forEach(a => { if (a.money) moneyDelta += a.money; });
+        if (moneyDelta) updateMoney(moneyDelta);
+        // 锁定当天日程 + 重置时段光标到「上午」，让今天从第一段剧情演起
+        setDailyPlan(cleanPlan);
+        setScheduleMap(prev => ({ ...prev, [day]: { ...cleanPlan, confirmed: true, ...(reused ? { reused: true } : {}) } }));
+        setSlotsDone(0);
+        addWorldState(`${reused ? "沿用上次安排，" : ""}锁定了今天的日程：${picks.map(a => a.name).join("、")}`);
+        vibrate(VIBE.unlock); playSFX('unlock');
+        return { picks, moneyDelta };
+    };
+
     const confirmDailyPlan = () => {
         if (scheduleMap[day]) {  // 今天已锁定 → 不重复
             setToastMsg("📋 今日日程已经锁定啦~");
             setTimeout(() => setToastMsg(""), 2500);
             return;
         }
-        const picks = SCHEDULE_SLOTS.map(s => findScheduleActivity(dailyPlan[s.key])).filter(Boolean);
-        if (picks.length === 0) {
+        const locked = lockPlanForToday(dailyPlan);
+        if (!locked) {
             setToastMsg("先安排至少一个时段再锁定~");
             setTimeout(() => setToastMsg(""), 2500);
             return;
         }
-        // 唯一的即时结算：资金收入（品牌活动等）。属性/风险/粉圈一律不在此加，交给剧情与熟练度。
-        let moneyDelta = 0;
-        picks.forEach(a => { if (a.money) moneyDelta += a.money; });
-        if (moneyDelta) updateMoney(moneyDelta);
-        // 锁定当天日程 + 重置时段光标到「上午」，让今天从第一段剧情演起
-        setScheduleMap(prev => ({ ...prev, [day]: { ...dailyPlan, confirmed: true } }));
-        setSlotsDone(0);
-        addWorldState(`锁定了今天的日程：${picks.map(a => a.name).join("、")}`);
-        vibrate(VIBE.unlock); playSFX('unlock');
-        setToastMsg(`📅 今日日程已锁定：${picks.map(a => a.emoji + a.name).join(" · ")}。剧情将围绕它展开${moneyDelta ? `（资金+${moneyDelta}万）` : ""}`);
+        setToastMsg(`📅 今日日程已锁定：${locked.picks.map(a => a.emoji + a.name).join(" · ")}。剧情将围绕它展开${locked.moneyDelta ? `（资金+${locked.moneyDelta}万）` : ""}`);
         setTimeout(() => setToastMsg(""), 3500);
         setActiveModal(null); // 关掉日历，回到剧情开始今天
+    };
+
+    // 【一键沿用 · V21】把最近一次锁定过的日程原样抄给今天并立即锁定。
+    // 「每天必须手排日程」是主线体感停滞的帮凶之一 —— 想直接看剧情的玩家，一键就能开演。
+    const findReusablePlan = () => {
+        for (let d = day - 1; d >= 1; d--) {
+            const rec = scheduleMap[d];
+            if (rec && (rec.morning || rec.noon || rec.evening)) return rec;
+        }
+        return null;
+    };
+    const reuseLastPlan = () => {
+        if (scheduleMap[day]) {
+            setToastMsg("📋 今日日程已经锁定啦~");
+            setTimeout(() => setToastMsg(""), 2500);
+            return false;
+        }
+        const src = findReusablePlan();
+        if (!src) {
+            setToastMsg("还没有可沿用的历史日程，先手动安排一次吧~");
+            setTimeout(() => setToastMsg(""), 2500);
+            return false;
+        }
+        const locked = lockPlanForToday(src, { reused: true });
+        if (!locked) {
+            setToastMsg("上次的日程记录不完整，先手动安排一次吧~");
+            setTimeout(() => setToastMsg(""), 2500);
+            return false;
+        }
+        setToastMsg(`⚡ 已沿用上次日程：${locked.picks.map(a => a.emoji + a.name).join(" · ")}${locked.moneyDelta ? `（资金+${locked.moneyDelta}万）` : ""}`);
+        setTimeout(() => setToastMsg(""), 3000);
+        return true;
     };
     
     // 社交平台内容刷新
@@ -2000,7 +2136,7 @@ function GameApp({ slotId, initialData, onBack }) {
         if (!scheduleMap[day]) {
             continueStoryLockRef.current = false;
             setActiveModal("calendar");
-            setToastMsg("📅 先安排今天的日程，剧情会围绕它展开~");
+            setToastMsg("📅 先安排今天的日程，剧情会围绕它展开（可一键沿用上次安排）~");
             setTimeout(() => setToastMsg(""), 3000);
             return;
         }
@@ -2008,7 +2144,20 @@ function GameApp({ slotId, initialData, onBack }) {
         setLoading(true);
         setError(null);
         setStreamingStory("");
-        const worldStateSummary = worldState.length ? `玩家在做决定前还做了：${worldState.join("；")}` : "";
+        // 【主线节拍器 · V21】怠速达到阈值 → 本拍强制推主线；差一拍时先埋伏笔做铺垫。
+        // 指令同时走两条路：① context 里的结构化字段（mainlineIdle/mainlinePush/contactFans），
+        // 供后端在 system prompt 层面正式处理；② 直接拼进 worldStateSummary —— 后端会把它
+        // 原样喂给模型，所以即使后端还没更新，这条指令也立即生效（前端兜底）。
+        const mainlinePush = mainlineIdle >= MAINLINE_PUSH_AFTER;
+        const contactFans = getContactFans();
+        const contactNames = contactFans.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean).join("、");
+        const pacingDirective = mainlinePush
+            ? `【叙事指令·必须遵守】主线已经连续 ${mainlineIdle} 段剧情停滞在日常里。本段必须推进主线：让神秘联系人 / 大粉（优先：${contactNames || "任一大粉"}）/ 进行中的事件登场，并发生实质进展（新消息、新变故、关系升温或危机发酵）。今日日程只能作为场景背景，禁止写成纯训练、营业流水账。`
+            : (mainlineIdle === MAINLINE_PUSH_AFTER - 1
+                ? "【叙事提示】主线已略有停滞：请在本段日程场景中穿插至少一条主线伏笔（大粉动向 / 神秘消息 / 舆论暗涌）。"
+                : "");
+        const worldActionsSummary = worldState.length ? `玩家在做决定前还做了：${worldState.join("；")}` : "";
+        const worldStateSummary = [worldActionsSummary, pacingDirective].filter(Boolean).join(" ");
         clearWorldState();
         
         // 各大粉情感（好感=hearts，信任=trust，吃醋=jealousy 派生）打包给后端做叙事/吃醋判定
@@ -2038,10 +2187,15 @@ function GameApp({ slotId, initialData, onBack }) {
                 slot, slotsDone,
                 todaySchedule: todayScheduleNames,           // 中文活动名，后端据此归类熟练度赛道
                 proficiency, lastTrainDay,                   // 熟练度进度 + 最后训练日（停练衰减用）
-                // 私联不再有天数闸/冷却，lastUnlockDay 只作存档记录，不再参与资格计算，故不上传
-                interactionCount,                            // 与各大粉实质交集次数（唯一的"铺垫"门槛）
+                // ⚠️ 从未私联时不要传 lastUnlockDay（传 0 会被后端当成「第0天私联过」，误触发 7 天冷却）
+                lastUnlockDay: lastUnlockDay > 0 ? lastUnlockDay : undefined,
+                interactionCount,                            // 与各大粉实质交集次数（私联门槛之一）
                 tomorrowScheduled: !!scheduleMap[day + 1],   // 明天是否已排（晚上时段判 needSchedule 用）
-                worldStateSummary, coupleExposure
+                worldStateSummary, coupleExposure,
+                // ── V21 主线节拍器：怠速拍数 / 本拍是否强制推主线 / 实质交集名单 ──
+                // 后端用途：mainlinePush=true 时在 system prompt 追加主线推进指令；
+                // 数值裁剪函数用 contactFans 校验 heartChanges 的对象（名单外 clamp 到 ±1）。
+                mainlineIdle, mainlinePush, contactFans
             },
             slot,                                            // 顶层也带一份，非流式路径直接可读
             attended: true,                                  // 玩家执行了本时段安排的事
@@ -2169,7 +2323,16 @@ function GameApp({ slotId, initialData, onBack }) {
             setCurrentStory(result.story);
             setCurrentChoices(result.choices || ["继续", "等待", "观察"]);
             const isSpecial = !!result.specialEvent; // 后端可标记"特殊事件"，允许数值幅度到 10（否则≤5）
-            if (result.heartChanges) updateHearts(result.heartChanges, isSpecial);
+            // 【contactFans 校验 · V21 前端安全网】没实质交集的大粉不该突然大幅动心：
+            // 名单外的好感变化单拍最多 ±1（初识≠动心）；名单内正常走 updateHearts 的 ±5/±10 上限。
+            // 与后端数值裁剪函数里的 contactFans 校验保持同一口径，后端未更新时前端兜底。
+            const gatedHearts = {};
+            Object.entries(result.heartChanges || {}).forEach(([id, d]) => {
+                const v = Number(d) || 0;
+                if (v === 0 || !FANS.some(f => f.id === id)) return;
+                gatedHearts[id] = contactFans.includes(id) ? v : Math.max(-1, Math.min(1, v));
+            });
+            if (Object.keys(gatedHearts).length) updateHearts(gatedHearts, isSpecial);
             if (result.emotionChanges) Object.entries(result.emotionChanges).forEach(([fanId, changes]) => updateFanEmotion(fanId, changes));
             // 【属性只从熟练度来】result.attrChanges 现在是后端熟练度「突破」兑换的 +1（不是模型自由加的）
             if (result.attrChanges && Object.keys(result.attrChanges).length) updateAttrs(result.attrChanges, true);
@@ -2196,8 +2359,8 @@ function GameApp({ slotId, initialData, onBack }) {
             // ── 交集次数：本回合真正和你有互动（好感/信任变化）的大粉 +1（私联硬门槛之一）──
             {
                 const touched = new Set([
-                    ...Object.keys(result.heartChanges || {}),
-                    ...Object.keys(result.emotionChanges || {})
+                    ...Object.keys(gatedHearts),   // 用校验后的名单：名单外的初识 +1 也计一次交集，下拍即入 contactFans
+                    ...Object.keys(result.emotionChanges || {}).filter(id => FANS.some(f => f.id === id))
                 ]);
                 if (touched.size) {
                     setInteractionCount(prev => {
@@ -2215,12 +2378,24 @@ function GameApp({ slotId, initialData, onBack }) {
                 const newFan = FANS.find(f => f.id === result.newUnlockedFan);
                 if (newFan) {
                     setUnlocked(prev => prev.includes(newFan.id) ? prev : [...prev, newFan.id]);
-                    setLastUnlockDay(day); // 仅作记录，不再限制下一次私联
+                    setLastUnlockDay(day); // 记录，后端据此算 7 天私联冷却
                     addWorldState(`成功私联了${newFan.name}`);
                     vibrate(VIBE.unlock); playSFX('unlock');
                     setTimeout(() => alert(`💌 你成功私联了新大粉：${newFan.emoji} ${newFan.name}！现在可以在手机里主动私聊、找他要钱了。`), 300);
                 }
             }
+
+            // ── 【主线节拍器 · V21】判定本拍是否推进了主线 ──
+            // 好感/信任变化、私联解锁、危机实质发酵（|risk|≥3）、特殊事件、情侣物暴露、
+            // 剧情主动弹手机、后端显式标记 mainlineBeat，任一命中都算「动了」→ 怠速清零；
+            // 一个都没有 → 这是一拍纯日常流水账，怠速 +1（updateHearts 处的清零与此口径一致）。
+            const beatMoved =
+                Object.keys(gatedHearts).length > 0 ||
+                Object.keys(result.emotionChanges || {}).length > 0 ||
+                !!result.newUnlockedFan || !!result.specialEvent || !!result.coupleExposure ||
+                !!result.triggerPhone || result.mainlineBeat === true ||
+                Math.abs(Number(result.riskChange) || 0) >= 3;
+            setMainlineIdle(n => beatMoved ? 0 : Math.min(MAINLINE_IDLE_CAP, n + 1));
 
             // history 截断到最近 25 条，避免无限增长撑爆 localStorage（5MB 配额）
             const HISTORY_MAX = 25;
@@ -2280,7 +2455,7 @@ function GameApp({ slotId, initialData, onBack }) {
                     return next;
                 });
                 // 【延迟触发涟漪】剧情渲染后 1.5s 再触发，不阻塞主流程（风险为百分制）
-                const eventSummary = (worldStateSummary || playerAction || "").slice(0, 80);
+                const eventSummary = (worldActionsSummary || playerAction || "").slice(0, 80); // 用纯玩家行动摘要，不带 V21 叙事指令
                 if (currentRisk >= 60 || (newHistory.length % 3 === 0 && Math.random() < 0.35)) {
                     setTimeout(() => triggerSocialDynamic(eventSummary), 1500);
                 }
@@ -2338,6 +2513,33 @@ function GameApp({ slotId, initialData, onBack }) {
             vibrate(VIBE.crisis); playSFX('unlock');
         }
     };
+
+    // 【成就自动解锁】把当前状态映射成"此刻满足哪些成就"的 id 列表（memo：只在相关状态变化时重算）。
+    // 与已解锁列表做差 → 有新达成就写库并弹 toast。effect 只依赖 memo 结果，不依赖 achievementsUnlocked，避免回环。
+    const satisfiedAchievements = React.useMemo(() => {
+        let st;
+        try { st = { ...buildEndingState(), cycleCount, achievementsUnlocked }; }
+        catch { return []; }
+        return ACHIEVEMENTS.filter(a => { try { return a.cond(st); } catch { return false; } }).map(a => a.id);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hearts, attrs, currentRisk, unlocked, endingsUnlocked, cycleCount, fandomHeat, antiCount, day]);
+
+    React.useEffect(() => {
+        const newly = satisfiedAchievements.filter(id => !achievementsUnlocked.includes(id));
+        if (!newly.length) return;
+        setAchievementsUnlocked(prev => {
+            const add = newly.filter(id => !prev.includes(id));
+            return add.length ? [...prev, ...add] : prev;
+        });
+        const first = ACHIEVEMENTS.find(a => a.id === newly[0]);
+        if (first) {
+            setToastMsg(`🏆 成就解锁：${first.icon} ${first.name}${newly.length > 1 ? ` 等 ${newly.length} 项` : ""}`);
+            setTimeout(() => setToastMsg(""), 3200);
+            vibrate(VIBE.dmReceive); playSFX('unlock');
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [satisfiedAchievements]);
+
     // 结局后：继续剧情（留在本周目）
     const continueAfterEnding = () => setTriggeredEnding(null);
     // 结局后：结束本周目（进入下一周目，保留已解锁结局/周目数，重置进度）
@@ -2357,6 +2559,7 @@ function GameApp({ slotId, initialData, onBack }) {
         setProficiency(emptyProficiency());
         setLastTrainDay({}); setLastUnlockDay(0); setInteractionCount({});
         setScheduleMap({}); setDailyPlan({ morning: null, noon: null, evening: null });
+        setMainlineIdle(0); // 【V21】新周目主线节拍器归零
         setActiveTab("home");
         setCurrentStory(INIT_STORY);
         setCurrentChoices(INIT_CHOICES);
@@ -2568,6 +2771,17 @@ function GameApp({ slotId, initialData, onBack }) {
     const addDmMessage = (fanId, msg) => {
         setDmHistories(prev => ({ ...prev, [fanId]: [...(prev[fanId] || []), msg].slice(-30) }));
     };
+    // 【V22】把"她对这个大粉说过的实质消息"记进聊天记忆（零成本召回材料，喂给后端）。
+    // 只记有内容的话：太短的（嗯/哦/在吗）和连续重复的不记；每人最多留最近 8 条。
+    const rememberPlayerMsg = (fanId, msg) => {
+        const t = String(msg || '').trim();
+        if (t.length < 4) return;
+        setDmMemory(prev => {
+            const list = prev[fanId] || [];
+            if (list[list.length - 1] === t) return prev;
+            return { ...prev, [fanId]: [...list, t].slice(-8) };
+        });
+    };
 const sendDM = async (fan, text, actionItem) => {
         const messageText = text || (actionItem ? actionItem.prompt : "");
         if (!messageText) return;
@@ -2581,6 +2795,8 @@ const sendDM = async (fan, text, actionItem) => {
         
         addWorldState(`和${fan.name}聊了天：${processedMessage.slice(0, 30)}`);
         addRecentInteraction(fan.id, `发了消息：${processedMessage.slice(0, 40)}`);
+        // 【V22】把她这句话记进聊天记忆（供后端"你还记得她说过…"召回）
+        rememberPlayerMsg(fan.id, processedMessage);
         
         const myMsg = { role: "user", content: processedMessage, time: new Date().toLocaleTimeString() };
         addDmMessage(fan.id, { ...myMsg, isMe: true });
@@ -2589,6 +2805,7 @@ const sendDM = async (fan, text, actionItem) => {
             role: m.isMe ? "user" : "assistant",
             content: m.content
         }));
+        const nowHour = new Date().getHours();
         
         const result = await callEdgeFunction('dm', {
             fan: { name: fan.name, handle: fan.handle, type: fan.type, personality: fan.personality, age: fan.age || 22, famousEvent: fan.famousEvent },
@@ -2597,12 +2814,25 @@ const sendDM = async (fan, text, actionItem) => {
             history: currentHistory,
             emotions: { ...fanEmotions[fan.id], jealousy: computeJealousy(hearts[fan.id] ?? 0, fanEmotions[fan.id]?.trust ?? 40) },
             heartLevel: hearts[fan.id] ?? 30,   // 好感度（后端据此判断包容/失控）
+            // 【V22】DM 真人感三件套的入参
+            dmMemory: dmMemory[fan.id] || [],                                   // 她之前说过的实质消息
+            relationshipStatus: fanEmotions[fan.id]?.relationshipStatus || "",  // 每8句算好的关系氛围摘要
+            isLateNight: (nowHour >= 23 || nowHour < 5),                        // 深夜模式氛围
         });
         
-        if (result.reply) {
-            addDmMessage(fan.id, { role: "assistant", content: result.reply, isMe: false, time: new Date().toLocaleTimeString() });
+        if (result.reply || (Array.isArray(result.bubbles) && result.bubbles.length)) {
+            // 【V22】多气泡：像真人发微信一样，一条条错开时间弹出
+            const bubbles = (Array.isArray(result.bubbles) && result.bubbles.length)
+                ? result.bubbles
+                : [result.reply];
+            bubbles.forEach((b, i) => {
+                setTimeout(() => {
+                    addDmMessage(fan.id, { role: "assistant", content: b, isMe: false, time: new Date().toLocaleTimeString() });
+                    vibrate(VIBE.dmReceive);
+                    if (i === 0) playSFX('dm');
+                }, i * 700);
+            });
             updateHearts({ [fan.id]: Math.floor((actionItem ? actionItem.heartDelta : 1) * heartBonus) });
-            vibrate(VIBE.dmReceive); playSFX('dm');
             
             // 【每聊 8 句触发关系摘要】修复闭包：手动拼上刚发/刚收的两条，避免拿到旧 state
             const newCount = (dmHistories[fan.id]?.length || 0) + 2;
@@ -2610,7 +2840,7 @@ const sendDM = async (fan, text, actionItem) => {
                 const latestMsgs = [
                     ...((dmHistories[fan.id] || []).slice(-6)),
                     { isMe: true, content: processedMessage },
-                    { isMe: false, content: result.reply }
+                    { isMe: false, content: result.reply || bubbles.join(" ") }
                 ];
                 const recentText = latestMsgs.map(m => `${m.isMe ? '我' : '他'}: ${m.content}`);
                 callEdgeFunction('summarize_relationship', { fanName: fan.name, history: recentText }).then(res => {
@@ -2730,6 +2960,10 @@ const sendDM = async (fan, text, actionItem) => {
                     emotions: { ...fanEmotions[fan.id], jealousy: computeJealousy(hearts[fan.id] ?? 0, fanEmotions[fan.id]?.trust ?? 40) },
                     heartLevel: hearts[fan.id] ?? 30,
                     playerNickname: nickname,
+                    // 【V22】群发私回也吃记忆/关系氛围/时间，让付费DM回复同样带真人质感
+                    dmMemory: dmMemory[fan.id] || [],
+                    relationshipStatus: fanEmotions[fan.id]?.relationshipStatus || "",
+                    isLateNight: (new Date().getHours() >= 23 || new Date().getHours() < 5),
                 });
                 if (result?.reply) {
                     const replyId = Date.now() + Math.floor(Math.random() * 99999);
@@ -3068,6 +3302,7 @@ const sendDM = async (fan, text, actionItem) => {
         // 剧情页
         if (activeTab === "story") {
             const todayPlanned = !!scheduleMap[day];
+            const reusableRec = !todayPlanned ? findReusablePlan() : null; // 【V21】有历史日程可沿用时，展示一键开演入口
             return (
                 <>
                     {!todayPlanned && (
@@ -3077,6 +3312,11 @@ const sendDM = async (fan, text, actionItem) => {
                                 剧情会围绕你的安排展开。先安排好上午/下午/晚上要做的事，今天才会开始。
                             </div>
                             <button className="btn-primary" style={{ width: "100%" }} onClick={() => setActiveModal("calendar")}>去安排今日日程 →</button>
+                            {reusableRec && (
+                                <button className="btn-secondary" style={{ width: "100%", marginTop: 8 }} onClick={reuseLastPlan}>
+                                    ⚡ 沿用上次日程（{summarizeScheduleEntry(reusableRec)}），直接开演
+                                </button>
+                            )}
                         </div>
                     )}
                     {todayPlanned && (
@@ -3091,6 +3331,12 @@ const sendDM = async (fan, text, actionItem) => {
                                     {s.label[0]}·{a ? a.name : "自由"}{i < 2 ? " " : ""}
                                 </span>;
                             })}
+                        </div>
+                    )}
+                    {/* 【主线节拍器 · V21】怠速到阈值 → 明示玩家：下一拍主线要动了 */}
+                    {todayPlanned && !loading && mainlineIdle >= MAINLINE_PUSH_AFTER && (
+                        <div style={{ margin: "0 16px 10px", fontSize: 11, color: "#a21caf", background: "rgba(168,85,247,0.10)", border: "1px solid rgba(168,85,247,0.25)", borderRadius: 12, padding: "6px 10px" }}>
+                            🎬 主线蓄势中 —— 日常已连续 {mainlineIdle} 拍，下一段剧情将迎来主线进展
                         </div>
                     )}
                     {currentEvent && (
@@ -3193,9 +3439,16 @@ const sendDM = async (fan, text, actionItem) => {
                         {loading ? (
                             <div className="loading-spinner"><div className="spinner"></div><div>AI 正在思考...</div></div>
                         ) : !todayPlanned ? (
-                            <button className="choice-btn" onClick={() => setActiveModal("calendar")} style={{ border: "1px dashed #d946a8", textAlign: "center", fontWeight: 600 }}>
-                                📅 先安排今日日程，再继续剧情
-                            </button>
+                            <>
+                                <button className="choice-btn" onClick={() => setActiveModal("calendar")} style={{ border: "1px dashed #d946a8", textAlign: "center", fontWeight: 600 }}>
+                                    📅 先安排今日日程，再继续剧情
+                                </button>
+                                {reusableRec && (
+                                    <button className="choice-btn" onClick={reuseLastPlan} style={{ textAlign: "center" }}>
+                                        ⚡ 一键沿用上次日程，直接开演
+                                    </button>
+                                )}
+                            </>
                         ) : (
                             <>
                                 {currentChoices.map((choice, idx) => (
@@ -3309,6 +3562,8 @@ const sendDM = async (fan, text, actionItem) => {
                         <div className="phone-app" onClick={() => setActiveModal("shop")}><div className="phone-app-icon">🛒</div><div className="phone-app-name">商城</div></div>
                         <div className="phone-app" onClick={() => setActiveModal("company")}><div className="phone-app-icon">🏢</div><div className="phone-app-name">公司</div></div>
                         <div className="phone-app" onClick={() => { setActiveModal("graph"); setShowRelationGraph(true); }}><div className="phone-app-icon">🕸️</div><div className="phone-app-name">关系图谱</div></div>
+                        {/* 🏆 结局图鉴 + 成就总览 */}
+                        <div className="phone-app" onClick={() => { setGalleryTab("endings"); setGalleryReading(null); setActiveModal("gallery"); }}><div className="phone-app-icon">🏆</div><div className="phone-app-name">图鉴</div></div>
                         {/* 匿名小号 → 小号管理：可在 Twitter/TikTok/微博/ins 自主选择是否注册小号 */}
                         <div className="phone-app" onClick={() => setActiveModal("altmanager")}><div className="phone-app-icon">🎭</div><div className="phone-app-name">小号管理</div></div>
                     </div>
@@ -3393,6 +3648,159 @@ const sendDM = async (fan, text, actionItem) => {
     };
     // ========== 弹窗渲染 ==========
     const renderModal = () => {
+        // ========== 🏆 结局图鉴 + 成就（乙女游戏式收集总览）==========
+        if (activeModal === "gallery") {
+            const unlockedSet = new Set(endingsUnlocked);
+            const endTotal = ENDINGS.length;
+            const endGot = ENDINGS.filter(e => unlockedSet.has(e.id)).length;
+            const typeOrder = ["HE", "公共", "BE", "OE", "TE"];
+            const grouped = typeOrder
+                .map(t => ({ t, meta: ENDING_TYPE_META[t], list: ENDINGS.filter(e => e.type === t) }))
+                .filter(g => g.list.length);
+
+            const acGot = ACHIEVEMENTS.filter(a => achievementsUnlocked.includes(a.id)).length;
+            const acTotal = ACHIEVEMENTS.length;
+
+            const closeGallery = () => { setActiveModal(null); setGalleryReading(null); };
+
+            // —— 子视图：回看某个已解锁结局的正文 ——
+            if (galleryReading) {
+                const e = galleryReading;
+                return (
+                    <div className="modal-overlay" onClick={closeGallery}>
+                        <div className="modal-content modal-anim" onClick={ev => ev.stopPropagation()} style={{ maxWidth: 440, maxHeight: "88vh", overflowY: "auto" }}>
+                            <div className="modal-header">
+                                <h3>🎬 {e.type} · 结局回顾</h3>
+                                <button className="modal-close" onClick={() => setGalleryReading(null)}>×</button>
+                            </div>
+                            <div style={{ padding: 18 }}>
+                                <h2 style={{ fontSize: 18, color: "#a855f7", marginBottom: 4 }}>{e.title}</h2>
+                                <div style={{ fontSize: 11, color: "#b88dc7", marginBottom: 14 }}>【结局成就】{e.achievement}</div>
+                                <div style={{ fontSize: 13, color: "#4a1d5a", lineHeight: 1.9, whiteSpace: "pre-wrap", marginBottom: 18 }}>{e.text}</div>
+                                <button className="btn-secondary" style={{ width: "100%" }} onClick={() => setGalleryReading(null)}>← 返回图鉴</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            const Bar = ({ got, total }) => (
+                <div style={{ height: 8, background: "#f3d5ed", borderRadius: 999, overflow: "hidden", marginTop: 6 }}>
+                    <div style={{ width: `${total ? Math.round(got / total * 100) : 0}%`, height: "100%", background: "linear-gradient(90deg,#d946a8,#a855f7)", borderRadius: 999, transition: "width .4s" }} />
+                </div>
+            );
+
+            return (
+                <div className="modal-overlay" onClick={closeGallery}>
+                    <div className="modal-content modal-anim" onClick={ev => ev.stopPropagation()} style={{ maxWidth: 460, maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
+                        <div className="modal-header">
+                            <h3>🏆 图鉴 · 第 {cycleCount + 1} 周目</h3>
+                            <button className="modal-close" onClick={closeGallery}>×</button>
+                        </div>
+                        {/* Tab 切换 */}
+                        <div style={{ display: "flex", gap: 8, padding: "10px 16px 0" }}>
+                            {[["endings", `结局 ${endGot}/${endTotal}`], ["achievements", `成就 ${acGot}/${acTotal}`]].map(([k, label]) => (
+                                <button key={k} onClick={() => setGalleryTab(k)}
+                                    style={{
+                                        flex: 1, padding: "8px 0", borderRadius: 12, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                                        border: galleryTab === k ? "none" : "1px solid #f3d5ed",
+                                        background: galleryTab === k ? "linear-gradient(90deg,#d946a8,#a855f7)" : "#fff",
+                                        color: galleryTab === k ? "#fff" : "#9d6db8"
+                                    }}>{label}</button>
+                            ))}
+                        </div>
+
+                        <div style={{ padding: 16, overflowY: "auto" }}>
+                            {galleryTab === "endings" && (
+                                <>
+                                    <div style={{ fontSize: 11, color: "#9d6db8" }}>已解锁 {endGot} / {endTotal} 个结局（跨周目累积）</div>
+                                    <Bar got={endGot} total={endTotal} />
+                                    {grouped.map(g => (
+                                        <div key={g.t} style={{ marginTop: 16 }}>
+                                            <div style={{ fontSize: 12, fontWeight: 700, color: "#a855f7", marginBottom: 8 }}>{g.meta.label}</div>
+                                            <div style={{ display: "grid", gap: 8 }}>
+                                                {g.list.map(e => {
+                                                    const got = unlockedSet.has(e.id);
+                                                    if (got) return (
+                                                        <div key={e.id} onClick={() => setGalleryReading(e)}
+                                                            style={{ background: "#fff", border: "1px solid #f3d5ed", borderRadius: 14, padding: "10px 12px", cursor: "pointer" }}>
+                                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                                                                <span style={{ fontSize: 13, fontWeight: 700, color: "#4a1d5a" }}>{e.title}</span>
+                                                                <span style={{ fontSize: 10, color: "#d946a8", whiteSpace: "nowrap" }}>点击回看 ›</span>
+                                                            </div>
+                                                            <div style={{ fontSize: 10, color: "#b88dc7", marginTop: 3 }}>🏅 {e.achievement}</div>
+                                                        </div>
+                                                    );
+                                                    // 未解锁：隐藏结局(TE)遮得更死
+                                                    const masked = e.type === "TE";
+                                                    return (
+                                                        <div key={e.id}
+                                                            style={{ background: "#faf3fb", border: "1px dashed #e6c8e6", borderRadius: 14, padding: "10px 12px", opacity: .85 }}>
+                                                            <div style={{ fontSize: 13, fontWeight: 700, color: "#c9a8d6" }}>
+                                                                {masked ? "？？？ 隐藏结局" : `🔒 ${e.title.replace(/·.*$/, "").trim() || "未解锁结局"}`}
+                                                            </div>
+                                                            <div style={{ fontSize: 10, color: "#b88dc7", marginTop: 3 }}>{g.meta.hint}</div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </>
+                            )}
+
+                            {galleryTab === "achievements" && (
+                                <>
+                                    <div style={{ fontSize: 11, color: "#9d6db8" }}>已解锁 {acGot} / {acTotal} 个成就（跨周目累积）</div>
+                                    <Bar got={acGot} total={acTotal} />
+                                    {/* 独立里程碑成就 */}
+                                    <div style={{ fontSize: 12, fontWeight: 700, color: "#a855f7", margin: "16px 0 8px" }}>里程碑成就</div>
+                                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                                        {ACHIEVEMENTS.map(a => {
+                                            const got = achievementsUnlocked.includes(a.id);
+                                            return (
+                                                <div key={a.id} style={{
+                                                    background: got ? "#fff" : "#faf3fb",
+                                                    border: got ? "1px solid #f3d5ed" : "1px dashed #e6c8e6",
+                                                    borderRadius: 14, padding: "10px 10px", opacity: got ? 1 : .8
+                                                }}>
+                                                    <div style={{ fontSize: 20, filter: got ? "none" : "grayscale(1) opacity(.5)" }}>{got ? a.icon : "🔒"}</div>
+                                                    <div style={{ fontSize: 12, fontWeight: 700, color: got ? "#4a1d5a" : "#c9a8d6", marginTop: 4 }}>{got ? a.name : "未解锁"}</div>
+                                                    <div style={{ fontSize: 10, color: "#b88dc7", marginTop: 3, lineHeight: 1.5 }}>{got ? a.desc : a.hint}</div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    {/* 结局成就（与每个结局绑定）*/}
+                                    <div style={{ fontSize: 12, fontWeight: 700, color: "#a855f7", margin: "18px 0 8px" }}>结局成就</div>
+                                    <div style={{ display: "grid", gap: 6 }}>
+                                        {ENDINGS.map(e => {
+                                            const got = unlockedSet.has(e.id);
+                                            return (
+                                                <div key={e.id} style={{
+                                                    display: "flex", alignItems: "center", gap: 8,
+                                                    background: got ? "#fff" : "#faf3fb",
+                                                    border: got ? "1px solid #f3d5ed" : "1px dashed #e6c8e6",
+                                                    borderRadius: 12, padding: "8px 10px", opacity: got ? 1 : .8
+                                                }}>
+                                                    <span style={{ fontSize: 15 }}>{got ? "🏅" : "🔒"}</span>
+                                                    <div style={{ minWidth: 0 }}>
+                                                        <div style={{ fontSize: 12, fontWeight: 700, color: got ? "#4a1d5a" : "#c9a8d6", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                            {got ? e.achievement : "？？？"}
+                                                        </div>
+                                                        <div style={{ fontSize: 10, color: "#b88dc7" }}>{got ? e.title : ENDING_TYPE_META[e.type]?.label}</div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
         // ========== 通用社交 App（feed + 发帖 + 评论 + 点赞 + 做数据）==========
         if (["youtube", "instagram", "twitter", "tiktok", "threads"].includes(activeModal)) {
             const key = activeModal;
@@ -4103,6 +4511,7 @@ const sendDM = async (fan, text, actionItem) => {
         if (activeModal === "calendar") {
             const todayRecord = scheduleMap[day];
             const lockedToday = !!todayRecord;  // 今天已确认结算 → 锁定不可再改
+            const reusableRec = lockedToday ? null : findReusablePlan(); // 【V21】可一键沿用的最近日程
             return (
                 <div className="modal-overlay" onClick={() => setActiveModal(null)}>
                     <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxHeight: "88vh", overflowY: "auto" }}>
@@ -4172,7 +4581,15 @@ const sendDM = async (fan, text, actionItem) => {
                                     🔒 今日日程已锁定：{summarizeScheduleEntry(todayRecord)}
                                 </div>
                             ) : (
-                                <button className="btn-primary" style={{ width: "100%" }} onClick={confirmDailyPlan}>🔒 锁定今日日程 · 开始今天</button>
+                                <>
+                                    <button className="btn-primary" style={{ width: "100%" }} onClick={confirmDailyPlan}>🔒 锁定今日日程 · 开始今天</button>
+                                    {reusableRec && (
+                                        <button className="btn-secondary" style={{ width: "100%", marginTop: 8 }}
+                                            onClick={() => { if (reuseLastPlan()) setActiveModal(null); }}>
+                                            ⚡ 一键沿用上次日程（{summarizeScheduleEntry(reusableRec)}）
+                                        </button>
+                                    )}
+                                </>
                             )}
                         </div>
 
@@ -4601,10 +5018,14 @@ const sendDM = async (fan, text, actionItem) => {
                             <div style={{ fontSize: 11, color: "#9d6db8", marginBottom: 12 }}>
                                 已解锁结局：{endingsUnlocked.length} / {ENDINGS.length} · 第 {cycleCount + 1} 周目
                             </div>
-                            <div style={{ display: "flex", gap: 10 }}>
+                            <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
                                 <button className="btn-secondary" style={{ flex: 1 }} onClick={continueAfterEnding}>继续剧情</button>
                                 <button className="btn-primary" style={{ flex: 1 }} onClick={endCurrentCycle}>结束本周目</button>
                             </div>
+                            <button className="btn-secondary" style={{ width: "100%", fontSize: 12 }}
+                                onClick={() => { setTriggeredEnding(null); setGalleryTab("endings"); setGalleryReading(null); setActiveModal("gallery"); }}>
+                                🏆 查看结局图鉴 / 成就
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -5081,13 +5502,13 @@ function CreateCharacter({ slotId, onComplete, onBack }) {
                             antiCount: Math.floor(Math.random() * 8) + 2,      // 黑粉占比 <10%
                             fanEmotions: initFanEmotions(),
                             altAccounts: { twitter: false, tiktok: false, weibo: false, instagram: false },
-                            encounterUsed: {}, endingsUnlocked: [], cycleCount: 0,
+                            encounterUsed: {}, endingsUnlocked: [], achievementsUnlocked: [], cycleCount: 0,
                             // V20 时段/熟练度/私联：全新开局
                             slotsDone: 0, proficiency: { vocal: 0, dance: 0, rap: 0, "时尚度": 0 },
                             lastTrainDay: {}, lastUnlockDay: 0, interactionCount: {}, schemaV20: true,
                             activeEvents: [], currentSchedule: generateRandomSchedule(1),
                             scheduleMap: {}, dailyPlan: { morning: null, noon: null, evening: null },
-                            dmReadStatus: {}, dmHistories: {}, coupleExposure: null, socialFeeds: {},
+                            dmReadStatus: {}, dmHistories: {}, dmMemory: {}, coupleExposure: null, socialFeeds: {},
                             paidDmDaily: { lastChatDate: null, messages: {}, thread: [] },
                             companyFavor: 60
                         };
