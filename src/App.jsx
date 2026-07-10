@@ -1,4 +1,3 @@
-import React from 'react';
 import { createClient } from '@supabase/supabase-js';
 // ============================================================
 // Supabase 配置
@@ -2238,7 +2237,12 @@ function GameApp({ slotId, initialData, onBack }) {
                 好感度: hearts[f.id] ?? 0,
                 信任度: fanEmotions[f.id]?.trust ?? 40,
                 吃醋度: fanEmotions[f.id]?.jealousy ?? computeJealousy(hearts[f.id] ?? 0, fanEmotions[f.id]?.trust ?? 40),
-                已私联: unlocked.includes(f.id)
+                已私联: unlocked.includes(f.id),
+                // ⭐ 把 FANS 里的人设/名场面一并带给后端，让 AI 在剧情里自然引用「粉圈出名事件」，
+                //   而不是让 famousEvent 只停留在前端做展示数据。（后端缺失时会回落到 canonical 副本）
+                type: f.type,
+                personality: f.personality,
+                famousEvent: f.famousEvent
             };
         });
         // 【主线解耦 · V22】主线不再挂靠"上午/下午/晚上"日程时段：
@@ -2300,7 +2304,9 @@ function GameApp({ slotId, initialData, onBack }) {
             // 后端返回 needSchedule（今天没排日程）→ 跳日程界面，不当剧情处理
             if (res.headers.get('content-type')?.includes('application/json')) {
                 const maybe = await res.clone().json().catch(() => null);
-                if (maybe?.needSchedule) {
+                // 仅当后端确实没有生成剧情时（story 为空）才当成排程闸门跳日历；
+                // 带正文的 needSchedule 是历史遗留的元信息，不能据此丢弃剧情。
+                if (maybe?.needSchedule && !maybe?.story) {
                     setLoading(false);
                     continueStoryLockRef.current = false;
                     setActiveModal("calendar");
@@ -2376,7 +2382,7 @@ function GameApp({ slotId, initialData, onBack }) {
             console.warn('streaming failed, falling back:', streamErr);
             // 非流式兜底：显式关掉 stream，让后端一次性返回裁剪后的数值 + 元信息（可被 JSON 解析）
             result = await callEdgeFunction('story', { ...storyData, stream: false });
-            if (result?.needSchedule) {
+            if (result?.needSchedule && !result?.story) {
                 setLoading(false); continueStoryLockRef.current = false;
                 setActiveModal("calendar");
                 setToastMsg(result.message || "📅 先安排今天的日程~");
@@ -2387,8 +2393,9 @@ function GameApp({ slotId, initialData, onBack }) {
         
         if (result?.error) {
             setError(result.error);
-        } else if (result?.needSchedule) {
-            // 今天没排日程（非流式路径兜底）→ 跳日程界面
+        } else if (result?.needSchedule && !result?.story) {
+            // 只有在后端真的没生成剧情（没有 story）时，needSchedule 才代表"必须先排日程"→ 跳日程界面。
+            // 主线解耦后，带正文的 needSchedule 属历史遗留元信息：必须优先渲染剧情，绝不据此丢弃剧情弹日历。
             setActiveModal("calendar");
             setToastMsg(result.message || "📅 先安排今天的日程~");
             setTimeout(() => setToastMsg(""), 3000);
@@ -2515,7 +2522,9 @@ function GameApp({ slotId, initialData, onBack }) {
     // ══════════════════════════════════════════════════════════════
     const endDayLockRef = React.useRef(false);
     const endDay = () => {
-        if (loading) { setToastMsg("剧情还在生成，稍等一下再结束今天~"); setTimeout(() => setToastMsg(""), 2500); return; }
+        // loading 是异步 state，翻转有一拍延迟；continueStoryLockRef 在事件循环里同步生效，
+        // 双保险堵住"剧情还在生成时点结束今天"的竞态（避免日结与剧情结算相互踩状态）。
+        if (loading || continueStoryLockRef.current) { setToastMsg("剧情还在生成，稍等一下再结束今天~"); setTimeout(() => setToastMsg(""), 2500); return; }
         if (endDayLockRef.current) return;
         endDayLockRef.current = true;
         setTimeout(() => { endDayLockRef.current = false; }, 800);
