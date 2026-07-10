@@ -2567,6 +2567,17 @@ function GameApp({ slotId, initialData, onBack }) {
         setTimeout(() => setToastMsg(""), 3500);
     };
 
+    // ══════════════════════════════════════════════════════════════
+    // 【每日日程闸门】关闭「每日总结」= 正式进入新的一天。
+    //   此刻自动弹出日程界面，确保玩家每天都会先安排/结算当天日程（每日日程有进行）。
+    //   日程仍是模态窗，玩家可自行关闭——只是保证「每天都会被带到日程面前」，不硬性困住。
+    //   若此时已达成结局（triggeredEnding），则不打断结局展示。
+    // ══════════════════════════════════════════════════════════════
+    const enterNextDayFromSummary = () => {
+        setDailySummary(null);
+        if (!triggeredEnding) setActiveModal("calendar");
+    };
+
     const handleChoice = (choice) => continueStory(choice);
     const handleCustom = () => {
         if (customText.trim()) {
@@ -3320,7 +3331,8 @@ const sendDM = async (fan, text, actionItem) => {
     const renderContent = () => {
         // 首页：参考乙女游戏的清爽入口层，保留主线、活动、偶遇、手机系统的关系
         if (activeTab === "home") {
-            const activityTitle = currentEvent?.name || "新活动筹备中";
+            // 【活动系统 · 独立】首页「活动」入口副标题为静态占位，绝不读取主线/剧情事件（currentEvent）。
+            const activityTitle = "筹备中 · 敬请期待";
             return (
                 <div className="ln-home">
                     <div className="ln-sky" aria-hidden="true">
@@ -3386,13 +3398,11 @@ const sendDM = async (fan, text, actionItem) => {
                     </div>
                     <div className="ln-placeholder-event">
                         <div className="ln-event-badge">Coming Soon</div>
-                        <h2>{currentEvent?.name || "限时活动预留位"}</h2>
-                        <p>这里是我以后可能追加的玩法入口，独立于主线与剧情事件，不会和剧情混在一起。</p>
-                        {currentEvent ? (
-                            <button className="btn-primary" onClick={() => setActiveTab("story")}>前往当前事件</button>
-                        ) : (
-                            <button className="btn-secondary" disabled>活动尚未开放</button>
-                        )}
+                        {/* 【活动系统 · 独立】纯占位：不读取 currentEvent，不提供任何跳转到主线/剧情的入口。
+                            具体玩法留待后续单独实现，与主线、剧情事件完全隔离、互不联动。 */}
+                        <h2>限时活动预留位</h2>
+                        <p>这里是以后要追加的独立玩法入口，和主线、剧情事件完全分开、互不影响。具体玩法待补充。</p>
+                        <button className="btn-secondary" disabled>活动尚未开放</button>
                     </div>
                 </div>
             );
@@ -5134,16 +5144,16 @@ const sendDM = async (fan, text, actionItem) => {
             )}
             {/* 【每日总结】一天结束时弹出的当天总结卡 */}
             {dailySummary && (
-                <div className="modal-overlay" onClick={() => setDailySummary(null)} style={{ zIndex: 10000 }}>
+                <div className="modal-overlay" onClick={enterNextDayFromSummary} style={{ zIndex: 10000 }}>
                     <div className="modal-content modal-anim" onClick={e => e.stopPropagation()} style={{ maxWidth: 380 }}>
-                        <div className="modal-header"><h3>🌙 第 {dailySummary.day} 天 · 每日总结</h3><button className="modal-close" onClick={() => setDailySummary(null)}>×</button></div>
+                        <div className="modal-header"><h3>🌙 第 {dailySummary.day} 天 · 每日总结</h3><button className="modal-close" onClick={enterNextDayFromSummary}>×</button></div>
                         <div style={{ padding: 18 }}>
                             <div style={{ fontSize: 13, color: "#4a1d5a", lineHeight: 1.7, whiteSpace: "pre-wrap", marginBottom: 14 }}>{dailySummary.text}</div>
                             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 11, color: "#9d6db8" }}>
                                 <span>⚡ 暴露风险 {dailySummary.risk}%</span>
                                 <span>🔥 粉圈热度 {dailySummary.fandom}</span>
                             </div>
-                            <button className="btn-primary" style={{ width: "100%", marginTop: 16 }} onClick={() => setDailySummary(null)}>进入第 {dailySummary.day + 1} 天</button>
+                            <button className="btn-primary" style={{ width: "100%", marginTop: 16 }} onClick={enterNextDayFromSummary}>📅 进入第 {dailySummary.day + 1} 天 · 安排日程</button>
                         </div>
                     </div>
                 </div>
