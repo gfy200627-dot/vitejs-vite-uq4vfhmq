@@ -422,15 +422,19 @@ function sanitizeAIText(text, char) {
     return cleaned;
 }
 
-// 深度遍历对象/数组，对所有 string 字段做净化
-function sanitizeAIResult(obj, char) {
+// 深度遍历对象/数组，对所有 string 字段做净化。
+// 【P4 防御】入参来自 JSON.parse(后端返回)，语法上不可能有循环引用，所以"无限递归"实际不会发生；
+//   但仍加一个宽松的深度上限（40，远超任何真实剧情/社交 JSON 的嵌套层数）作为栈溢出兜底。
+//   超限时原样返回该子树（不截断，避免误伤合法数据）——真实 payload 永远触不到这条线。
+function sanitizeAIResult(obj, char, depth = 0) {
     if (obj == null) return obj;
+    if (depth > 40) return obj;
     if (typeof obj === 'string') return sanitizeAIText(obj, char);
-    if (Array.isArray(obj)) return obj.map(item => sanitizeAIResult(item, char));
+    if (Array.isArray(obj)) return obj.map(item => sanitizeAIResult(item, char, depth + 1));
     if (typeof obj === 'object') {
         const cleaned = {};
         for (const k in obj) {
-            cleaned[k] = sanitizeAIResult(obj[k], char);
+            cleaned[k] = sanitizeAIResult(obj[k], char, depth + 1);
         }
         return cleaned;
     }
@@ -1970,6 +1974,11 @@ function GameApp({ slotId, initialData, onBack }) {
     // 单回合累积上限 RISK_TURN_CAP(=15)，疑虑≥50 才把积累引爆为真实风险。
     const updateRisk = (delta) => {
         if (delta <= 0) {
+            // 【P5】风险下降代表本轮"风险压力"释放，同步回退累积计数（clamp 到 0），
+            //   避免后续同一累积窗口内的正向 delta 仍被之前的上限保护误削减。
+            //   注：累积计数本就每个主线回合重置（见 continueStory），此处只影响两次重置之间
+            //   由 DM/道具等多来源触发的连续风险变化，纯属稳健化，不改变主线平衡。
+            if (delta < 0) riskTurnAccumRef.current = Math.max(0, riskTurnAccumRef.current + delta);
             setCurrentRisk(prev => Math.min(100, Math.max(0, prev + delta)));
             return;
         }
@@ -2921,16 +2930,27 @@ const sendDM = async (fan, text, actionItem) => {
         const myMsg = { role: "user", content: processedMessage, time: new Date().toLocaleTimeString() };
         addDmMessage(fan.id, { ...myMsg, isMe: true });
         
-        const currentHistory = (dmHistories[fan.id] || []).slice(-10).map(m => ({
-            role: m.isMe ? "user" : "assistant",
-            content: m.content
-        }));
+        // 【DM 上下文净化】只把「真实对话」喂给模型，避免它答非所问：
+        //   ① 丢掉发送失败的占位/错误气泡（isError）——否则模型会把自己"上一条回复"读成
+        //      「[消息发送了，但…还没回复]」这种系统提示，然后完全接不上玩家的话；
+        //   ② 剥掉跨频道前缀（如「[Weverse DM私回] 」）——付费DM会写进同一条 thread，
+        //      带着频道标签混进来会让模型串味、跑偏。
+        const stripChannelTag = (s) => String(s || "").replace(/^\s*\[[^\]]{1,20}\]\s*/, "").trim();
+        const currentHistory = (dmHistories[fan.id] || [])
+            .filter(m => !m.isError && String(m.content || "").trim())
+            .slice(-10)
+            .map(m => ({ role: m.isMe ? "user" : "assistant", content: stripChannelTag(m.content) }))
+            .filter(m => m.content);
         const nowHour = new Date().getHours();
         
         const result = await callEdgeFunction('dm', {
             fan: { name: fan.name, handle: fan.handle, type: fan.type, personality: fan.personality, age: fan.age || 22, famousEvent: fan.famousEvent },
             charAge: Number(char?.age) || 20, // 【传入年龄判定】
-            userMessage: isJealous ? `[吃醋模式] ${processedMessage}` : processedMessage,
+            // ⭐ 纯净玩家原话：后端拿它做"严格对应本句"的指令 + 最终 user 轮。
+            //   不要把「[吃醋模式]」这类标签混进模型要回应的那句话里——吃醋与否已由 emotions.jealousy
+            //   的数值传达（后端据此决定包容/失控），文字前缀只会让模型去回应"[吃醋模式]"本身。
+            playerMessage: processedMessage,
+            userMessage: processedMessage,
             history: currentHistory,
             emotions: { ...fanEmotions[fan.id], jealousy: computeJealousy(hearts[fan.id] ?? 0, fanEmotions[fan.id]?.trust ?? 40) },
             heartLevel: hearts[fan.id] ?? 30,   // 好感度（后端据此判断包容/失控）
@@ -2995,15 +3015,15 @@ const sendDM = async (fan, text, actionItem) => {
         setQuotingFan(null);
         setQuotingMsgInfo(null);
 
-        // 构建 history（用快照，避免闭包拿到旧值）
-        const historyForApi = snapshotThread.slice(-8).map(m => {
-            const isFan = m.from !== "player";
-            const fanName = isFan ? (FANS.find(f => f.id === m.from)?.name || m.senderName || m.from) : null;
-            return {
-                role: m.from === "player" ? "user" : "assistant",
-                content: m.from === "player" ? m.text : `[${fanName}的私回] ${m.text}`
-            };
-        });
+        // 【付费DM上下文净化】Weverse 是"偶像广播 + 每位粉丝各自私回"的结构。
+        //   对【某一位大粉】发起的模型请求，上下文只应包含：偶像的广播（user）+ 这位大粉自己
+        //   过去的私回（assistant）。若把别的大粉/普通粉丝的回复也塞进来（哪怕加了「[X的私回]」前缀），
+        //   模型会把"别人说的话"当成自己说过的，导致答非所问、人设串味。故按 fanId 过滤、且不加前缀。
+        const buildPaidHistoryForFan = (thread, fanId) => (thread || [])
+            .filter(m => m.from === "player" || m.from === fanId)
+            .filter(m => String(m.text || "").trim())
+            .slice(-8)
+            .map(m => ({ role: m.from === "player" ? "user" : "assistant", content: String(m.text).trim() }));
 
         // 2. 生成1-3条普通粉丝回复（AI生成，异步插入）
         // 普通粉丝的账号名根据当前主角（玩家昵称/艺名）动态生成，不再写死"晨晨"。
@@ -3076,7 +3096,7 @@ const sendDM = async (fan, text, actionItem) => {
                     playerMessage: message,           // ⭐ 额外字段：纯净的玩家消息（如果 edge function 支持就用得上）
                     quotedFanReply: quotedPrev,       // ⭐ 额外字段：被引用的对方上条
                     isQuotedFan: isQuoted,            // ⭐ 是否就是被引用的那位
-                    history: historyForApi,
+                    history: buildPaidHistoryForFan(snapshotThread, fan.id),
                     emotions: { ...fanEmotions[fan.id], jealousy: computeJealousy(hearts[fan.id] ?? 0, fanEmotions[fan.id]?.trust ?? 40) },
                     heartLevel: hearts[fan.id] ?? 30,
                     playerNickname: nickname,
