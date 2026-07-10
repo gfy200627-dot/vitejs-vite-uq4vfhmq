@@ -157,6 +157,31 @@ const GIFT_ITEMS = [
 function heartsAllGte(hearts, n) { return Object.values(hearts).every(v => v >= n); }
 function trustAllGte(trustMap, n) { return Object.values(trustMap).every(v => (v ?? 0) >= n); }
 
+// ============================================================
+// 【路线相位 · 群像期(共通线) → 单人线】
+// 明确选定男主之前，六位男主的戏份应大致均衡（群像期 / 共通线）。
+// 只有当某位男主的好感度突破阈值、且其余五位全部落在上限之下时，
+// 才判定为"退出群像期、进入该男主的单人线"，主线随之聚焦他。
+// 相位完全由 hearts 实时派生，不额外存"已选男主"标记 —— 好感格局变化时会自动回到群像期。
+// ============================================================
+const SOLO_LOCK_HEART = 85;       // 进入单人线：某位男主好感度 ≥ 85
+const SOLO_LOCK_OTHERS_MAX = 65;  // 且其余所有男主好感度 ≤ 65（否则仍在群像期/养鱼中）
+
+// 返回 { phase:"group"|"solo", soloLeadId, leadId, leadHeart, othersMax }
+function computeRoutePhase(hearts) {
+  const ids = FANS.map(f => f.id);
+  let leadId = ids[0], leadHeart = -1;
+  for (const id of ids) {
+    const h = hearts?.[id] ?? 0;
+    if (h > leadHeart) { leadHeart = h; leadId = id; }
+  }
+  const othersMax = Math.max(0, ...ids.filter(id => id !== leadId).map(id => hearts?.[id] ?? 0));
+  if (leadHeart >= SOLO_LOCK_HEART && othersMax <= SOLO_LOCK_OTHERS_MAX) {
+    return { phase: "solo", soloLeadId: leadId, leadId, leadHeart, othersMax };
+  }
+  return { phase: "group", soloLeadId: null, leadId, leadHeart, othersMax };
+}
+
 const ENDINGS = [
   // ---- 单人 HE ----
   { id: "he_wonjeong", type: "HE", title: "梁祯元 ·《我与我周旋久》", achievement: "夜航船",
@@ -1605,6 +1630,9 @@ function GameApp({ slotId, initialData, onBack }) {
     const [interactionCount, setInteractionCount] = React.useState(initialData.interactionCount || {}); // 与各大粉的实质交集次数（私联门槛之一）
     // 【主线节拍器 · V21】主线怠速计数：连续多少拍剧情没有实质主线进展（跨天累计，随存档持久化）
     const [mainlineIdle, setMainlineIdle] = React.useState(initialData.mainlineIdle ?? 0);
+    // 【群像期轮值 · V23】环形游标：群像期每推进一拍，主线把镜头轮流交给下一位男主，
+    //   避免主线总围着"玩家最近私聊/送礼过的那位"转。进入单人线后此游标停用。
+    const [spotlightCursor, setSpotlightCursor] = React.useState(initialData.spotlightCursor ?? 0);
     const [currentSchedule, setCurrentSchedule] = React.useState(initialData.currentSchedule || generateRandomSchedule(1));
     const [activeEvents, setActiveEvents] = React.useState(initialData.activeEvents || []);
     const [coupleExposure, setCoupleExposure] = React.useState(initialData.coupleExposure || null);
@@ -1896,6 +1924,8 @@ function GameApp({ slotId, initialData, onBack }) {
             proficiency, lastTrainDay, lastUnlockDay, interactionCount,
             // V21 主线节拍器
             mainlineIdle,
+            // V23 群像期轮值游标
+            spotlightCursor,
             // V22 心力 / 每日行动数（取代 slotsDone）
             mentalEnergy, todayActions,
             // DM 聊天记忆
@@ -1919,7 +1949,7 @@ function GameApp({ slotId, initialData, onBack }) {
         attrs, money, teammates, fandomHeat, antiCount, fanEmotions, activeEvents, currentSchedule, dmReadStatus, dmHistories,
         coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan,
         currentWorld, altAccounts, encounterUsed, endingsUnlocked, cycleCount,
-        proficiency, lastTrainDay, lastUnlockDay, interactionCount, mainlineIdle, mentalEnergy, todayActions, dmMemory, achievementsUnlocked]);
+        proficiency, lastTrainDay, lastUnlockDay, interactionCount, mainlineIdle, spotlightCursor, mentalEnergy, todayActions, dmMemory, achievementsUnlocked]);
     
     // 每日推进
     React.useEffect(() => {
@@ -2229,14 +2259,40 @@ function GameApp({ slotId, initialData, onBack }) {
         // 原样喂给模型，所以即使后端还没更新，这条指令也立即生效（前端兜底）。
         const mainlinePush = mainlineIdle >= MAINLINE_PUSH_AFTER;
         const contactFans = getContactFans();
-        const contactNames = contactFans.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean).join("、");
+
+        // ── 【群像期 / 单人线 · 路线相位 V23】────────────────────────────────
+        // 相位完全由好感度实时派生（computeRoutePhase）：
+        //   · 群像期(共通线)：没有任何一位好感 ≥85 且其余 ≤65 → 六人戏份轮流、均衡，主线不锁人。
+        //   · 单人线：某位好感 ≥85 且其余五人全部 ≤65 → 锁定该男主，主线聚焦他。
+        // 群像期用环形游标 spotlightCursor 轮流点名，避免主线总围着"玩家最近私聊过的那位"转
+        //   —— 这正是"没明确选定男主，剧情却一直围着同一人展开"的病根。
+        const routeInfo = computeRoutePhase(hearts);
+        const soloLead = routeInfo.phase === "solo" ? FANS.find(f => f.id === routeInfo.soloLeadId) : null;
+        // 群像期本拍轮到的男主（游标随每次群像拍推进，见下方结算处）
+        const spotlightId = FANS[((spotlightCursor % FANS.length) + FANS.length) % FANS.length].id;
+        const spotlightName = FANS.find(f => f.id === spotlightId)?.name || "";
+        // 冷落名单：当前好感最低的三位，提示模型别让他们淡出群像
+        const underfeaturedIds = [...FANS]
+            .sort((a, b) => (hearts[a.id] ?? 0) - (hearts[b.id] ?? 0))
+            .slice(0, 3).map(f => f.id);
+        const underfeaturedNames = underfeaturedIds.map(id => FANS.find(f => f.id === id)?.name).filter(Boolean).join("、");
+
+        // 路线基调（每一拍都注入，不只在强推时）——修复"没选定男主却总围着同一人转"的关键
+        const routeDirective = soloLead
+            ? `【路线·单人线】剧情已进入【${soloLead.name}】的单人线（他好感≥${SOLO_LOCK_HEART}、其余男主均≤${SOLO_LOCK_OTHERS_MAX}）。主线聚焦你与${soloLead.name}的关系推进；其余男主退居配角/背景，可吃醋、旁观、搅局，但不再与他平分戏份。`
+            : `【路线·群像期(共通线)】尚未锁定任何男主，六位男主戏份必须大致均衡，绝不能让剧情持续围着同一个人展开。本段请把镜头主要交给【${spotlightName}】，同时留意别冷落【${underfeaturedNames}】。谁登场由玩家选择与场景决定，但跨若干段整体要雨露均沾；严禁仅因玩家最近私聊/送礼/偏爱某人，就让主线连续偏向他。`;
+
+        // 强推指令（怠速到阈值才追加）：群像期推"本拍轮值/戏份偏少的人"，单人线推该男主
+        const pushWho = soloLead
+            ? soloLead.name
+            : `${spotlightName}（本拍轮值）${underfeaturedNames ? `，或戏份偏少的 ${underfeaturedNames}` : ""}`;
         const pacingDirective = mainlinePush
-            ? `【叙事指令·必须遵守】主线已经连续 ${mainlineIdle} 段剧情停滞在日常里。本段必须推进主线：让神秘联系人 / 大粉（优先：${contactNames || "任一大粉"}）/ 进行中的事件登场，并发生实质进展（新消息、新变故、关系升温或危机发酵）。今日日程只能作为场景背景，禁止写成纯训练、营业流水账。`
+            ? `【叙事指令·必须遵守】主线已经连续 ${mainlineIdle} 段剧情停滞在日常里。本段必须推进主线：让神秘联系人 / 大粉（${pushWho}）/ 进行中的事件登场，并发生实质进展（新消息、新变故、关系升温或危机发酵）。今日日程只能作为场景背景，禁止写成纯训练、营业流水账。`
             : (mainlineIdle === MAINLINE_PUSH_AFTER - 1
                 ? "【叙事提示】主线已略有停滞：请在本段日程场景中穿插至少一条主线伏笔（大粉动向 / 神秘消息 / 舆论暗涌）。"
                 : "");
         const worldActionsSummary = worldState.length ? `玩家在做决定前还做了：${worldState.join("；")}` : "";
-        const worldStateSummary = [worldActionsSummary, pacingDirective].filter(Boolean).join(" ");
+        const worldStateSummary = [worldActionsSummary, routeDirective, pacingDirective].filter(Boolean).join(" ");
         clearWorldState();
         
         // 各大粉情感（好感=hearts，信任=trust，吃醋=jealousy 派生）打包给后端做叙事/吃醋判定
@@ -2281,7 +2337,13 @@ function GameApp({ slotId, initialData, onBack }) {
                 // ── V21 主线节拍器：怠速拍数 / 本拍是否强制推主线 / 实质交集名单 ──
                 // 后端用途：mainlinePush=true 时在 system prompt 追加主线推进指令；
                 // 数值裁剪函数用 contactFans 校验 heartChanges 的对象（名单外 clamp 到 ±1）。
-                mainlineIdle, mainlinePush, contactFans
+                mainlineIdle, mainlinePush, contactFans,
+                // ── V23 路线相位（群像期/单人线）+ 群像期轮值 ──
+                // 后端据此决定主线是"六人均衡的共通线"还是"聚焦某男主的单人线"。
+                routePhase: routeInfo.phase,        // "group" | "solo"
+                soloLeadId: routeInfo.soloLeadId,   // 单人线锁定的男主 id（群像期为 null）
+                spotlightLeadId: spotlightId,       // 群像期本拍轮到的男主 id
+                underfeaturedIds                    // 当前好感最低的三位 id（提示别冷落）
             },
             slot,                                            // 顶层也带一份，非流式路径直接可读
             decoupled: true,                                 // 顶层也带一份（后端两处都读）
@@ -2487,6 +2549,10 @@ function GameApp({ slotId, initialData, onBack }) {
                 Math.abs(Number(result.riskChange) || 0) >= 3;
             setMainlineIdle(n => beatMoved ? 0 : Math.min(MAINLINE_IDLE_CAP, n + 1));
 
+            // ── 【群像期轮值 V23】群像期每完成一拍，把镜头轮到下一位男主（单人线不轮值）──
+            //   保证攻略前六人主线戏份大致均等，不因玩家偏好某人而让主线持续偏向他。
+            if (routeInfo.phase === "group") setSpotlightCursor(c => (c + 1) % FANS.length);
+
             // history 截断到最近 25 条，避免无限增长撑爆 localStorage（5MB 配额）
             const HISTORY_MAX = 25;
             const merged = [...history, result.story];
@@ -2689,6 +2755,7 @@ function GameApp({ slotId, initialData, onBack }) {
         setLastTrainDay({}); setLastUnlockDay(0); setInteractionCount({});
         setScheduleMap({}); setDailyPlan({ morning: null, noon: null, evening: null });
         setMainlineIdle(0); // 【V21】新周目主线节拍器归零
+        setSpotlightCursor(0); // 【V23】新周目群像期轮值游标归零
         setActiveTab("home");
         setCurrentStory(INIT_STORY);
         setCurrentChoices(INIT_CHOICES);
