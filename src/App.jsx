@@ -556,12 +556,18 @@ function migrateSaveData(raw) {
     if (data.cycleCount === undefined) data.cycleCount = 0;
     // ===== V20 迁移：时段制 + 熟练度 + 私联门槛 =====
     if (!data.schemaV20) {
-        if (data.slotsDone === undefined) data.slotsDone = 0;
         if (!data.proficiency || typeof data.proficiency !== "object") data.proficiency = { vocal: 0, dance: 0, rap: 0, "时尚度": 0 };
         if (!data.lastTrainDay || typeof data.lastTrainDay !== "object") data.lastTrainDay = {};
         if (data.lastUnlockDay === undefined) data.lastUnlockDay = 0;
         if (!data.interactionCount || typeof data.interactionCount !== "object") data.interactionCount = {};
         data.schemaV20 = true;
+    }
+    // ===== V22 迁移：心力 / 每日行动数（取代 slotsDone 时段光标）=====
+    if (!data.schemaV22) {
+        if (data.mentalEnergy === undefined) data.mentalEnergy = MENTAL_MAX;
+        if (data.todayActions === undefined) data.todayActions = 0;
+        delete data.slotsDone; // 旧存档里的时段光标已废弃，清掉避免误用
+        data.schemaV22 = true;
     }
     // 【兜底】旧存档可能写入了"主控"字样的剧情文本，加载时清洗一遍
     if (data.char) {
@@ -777,6 +783,32 @@ const MAINLINE_PUSH_AFTER = 2;   // 连续 2 拍没动主线 → 第 3 拍强制
 const MAINLINE_IDLE_CAP = 9;     // 怠速计数上限（防无限增长，也避免指令文案数字失真）
 
 // ============================================================
+// 【心力 / 每日行动 · 主线推进约束】把"一天能推多少主线"这件事管起来：
+//   · 主线（AI 剧情选项）每选一次消耗心力；心力见底就只能休息/日程，逼出节奏。
+//   · 一天不再靠"日程走完"自动结束，而是玩家自己点【结束今天】；每天恢复心力、清零行动数。
+//   · 日程/社交/休息不耗心力。
+// ============================================================
+const MENTAL_MAX = 100;                 // 心力上限
+const MENTAL_COST_MAINLINE = 15;        // 每个主线选项消耗
+const MENTAL_RECOVER_PER_DAY = 50;      // 每天开始恢复
+const MENTAL_MIN_TO_ACT = 10;           // 低于此值主线选项不可选
+const MENTAL_WARN = 20;                  // 低于此值状态栏变黄提醒
+const MAX_ACTIONS_PER_DAY = 5;          // 做满这么多件事，系统建议休息（软上限，不强制）
+
+// 一天内"做了几件事"→ 一个粗略的时间感（顶部状态栏用；替代旧的 slotsDone 时段光标）
+const dayPhaseFromActions = (n) => {
+    const k = n | 0;
+    if (k <= 0) return "清晨";
+    if (k === 1) return "上午";
+    if (k === 2) return "午后";
+    if (k === 3) return "黄昏";
+    if (k === 4) return "入夜";
+    return "深夜";
+};
+// 给后端一个中性时段（主线解耦后不再有"上午/下午/晚上"的日程时段概念，仅为兼容后端签名）
+const neutralSlotFromActions = (n) => (n | 0) <= 1 ? "morning" : (n | 0) <= 3 ? "noon" : "evening";
+
+// ============================================================
 // 社交引擎：计数解析/格式化 + AI内容归一化 + 平台配置
 // ============================================================
 function parseCount(v) {
@@ -801,6 +833,14 @@ let _pid = 0;
 // 六位大粉的 handle 列表，用于识别大粉发的帖子
 const BIG_FAN_HANDLES = ["@Won_Jung_", "@JAYPARK_0420", "@JAKE_S", "@IceShP", "@KiMSunOo.O", "@Riki_",
     "梁祯元", "朴综星", "沈载伦", "朴成训", "金善禹", "西村力"];
+// ⭐ 兜底安全网：识别"公开帖被写成了第二人称剧情旁白"的漏网帖（如"你窝进沙发，摸出手机"）。
+// 与后端 isNarrationLeak 同一套判据：只挑极旁白化的动词、且必须带「你」，避免误伤
+// "想你了/求翻牌/她好美"这类正常粉丝发言。命中的帖子直接不渲染（宁缺毋滥）。
+const POST_NARRATION_LEAK = /你(?:窝进|靠在|坐在|站在|躺在|走进|走近|摸出|掏出|塞回|扣下|攥|挑眉|皱眉|垂眸|抬眸|抬眼|抿(?:了|着)?唇|咽了口|顿住|愣(?:了|住))/;
+function isPostNarrationLeak(p) {
+    if (!p) return false;
+    return POST_NARRATION_LEAK.test(String(p.content || "")) || POST_NARRATION_LEAK.test(String(p.title || ""));
+}
 function makePost(p) {
     const likes = parseCount(p.likes ?? p.views);
     const isFanPost = !!p.isFanPost || BIG_FAN_HANDLES.some(h => (p.author || "").includes(h.replace("@", "")));
@@ -829,9 +869,11 @@ function normalizeSocialResult(platform, r) {
     const arr = r.posts || r.tweets || r.videos || [];
     // ⭐ 过滤掉 AI 返回的空帖（没有正文/标题/媒体）——否则会渲染出只有点赞数和
     // "做数据"按钮、却没有任何文字的"幽灵帖"（微博/INS 里那种空白卡片）。
+    // 再叠一层：丢掉写成第二人称剧情旁白的漏网帖（后端漏了前端也兜住）。
     return arr
         .map(makePost)
-        .filter(p => p.mine || (p.content && p.content.trim()) || (p.title && p.title.trim()) || p.media);
+        .filter(p => p.mine || (p.content && p.content.trim()) || (p.title && p.title.trim()) || p.media)
+        .filter(p => p.mine || !isPostNarrationLeak(p));
 }
 // 平台配置：标题、是否可发帖、发帖类型、卡片样式、主控可发自拍/视频的媒体标签
 const SOCIAL_CFG = {
@@ -1549,8 +1591,9 @@ function GameApp({ slotId, initialData, onBack }) {
     const [schedules, setSchedules] = React.useState(initialData.schedules || {});
     const [scheduleMap, setScheduleMap] = React.useState(initialData.scheduleMap || {}); // 每天实际行程记录
     const [dailyPlan, setDailyPlan] = React.useState(initialData.dailyPlan || { morning: null, noon: null, evening: null }); // 今日早/中/晚行程（待确认）
-    // 【V20 时段/熟练度】一天分上午/下午/晚上三段，剧情一次只演一段（治「进展过快」）。
-    const [slotsDone, setSlotsDone] = React.useState(initialData.slotsDone ?? 0); // 今天已演完的时段数 0-2（0=上午,1=下午,2=晚上）
+    // 【心力 / 每日行动】主线推进约束 + 玩家主动结束一天（取代旧的 slotsDone 时段光标）
+    const [mentalEnergy, setMentalEnergy] = React.useState(initialData.mentalEnergy ?? MENTAL_MAX); // 心力 0-100，主线每选一次 -15，每天 +50
+    const [todayActions, setTodayActions] = React.useState(initialData.todayActions ?? 0);          // 今天做了几件事（主线/日程/社交/休息各 +1），结束一天归零
     // 熟练度：日程不直接加属性，练同一条线累计到 6 才由后端兑换 +1。这里存后端算好的进度。
     const [proficiency, setProficiency] = React.useState(initialData.proficiency || emptyProficiency());
     const [lastTrainDay, setLastTrainDay] = React.useState(initialData.lastTrainDay || {}); // 每条赛道最后训练日（后端算停练衰减用）
@@ -1845,15 +1888,17 @@ function GameApp({ slotId, initialData, onBack }) {
             activeEvents, currentSchedule, dmReadStatus, dmHistories, coupleExposure, paidDmDaily,
             companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan,
             currentWorld, altAccounts, encounterUsed, endingsUnlocked, cycleCount,
-            // V20 时段/熟练度/私联
-            slotsDone, proficiency, lastTrainDay, lastUnlockDay, interactionCount,
+            // V20 熟练度/私联
+            proficiency, lastTrainDay, lastUnlockDay, interactionCount,
             // V21 主线节拍器
             mainlineIdle,
-            // V22 DM 聊天记忆
+            // V22 心力 / 每日行动数（取代 slotsDone）
+            mentalEnergy, todayActions,
+            // DM 聊天记忆
             dmMemory,
             // 成就（跨周目累积）
             achievementsUnlocked,
-            schemaV19: true, schemaV20: true, schemaV21: true
+            schemaV19: true, schemaV20: true, schemaV21: true, schemaV22: true
         };
         const r = saveGameToSlot(slotId, saveData);
         if (r && r.ok === false) {
@@ -1870,7 +1915,7 @@ function GameApp({ slotId, initialData, onBack }) {
         attrs, money, teammates, fandomHeat, antiCount, fanEmotions, activeEvents, currentSchedule, dmReadStatus, dmHistories,
         coupleExposure, paidDmDaily, companyFavor, socialFeeds, socialDynamics, tiktokAlt, scheduleMap, companyContract, dailyPlan,
         currentWorld, altAccounts, encounterUsed, endingsUnlocked, cycleCount,
-        slotsDone, proficiency, lastTrainDay, lastUnlockDay, interactionCount, mainlineIdle, dmMemory, achievementsUnlocked]);
+        proficiency, lastTrainDay, lastUnlockDay, interactionCount, mainlineIdle, mentalEnergy, todayActions, dmMemory, achievementsUnlocked]);
     
     // 每日推进
     React.useEffect(() => {
@@ -2015,17 +2060,43 @@ function GameApp({ slotId, initialData, onBack }) {
         const cleanPlan = { morning: plan?.morning || null, noon: plan?.noon || null, evening: plan?.evening || null };
         const picks = SCHEDULE_SLOTS.map(s => findScheduleActivity(cleanPlan[s.key])).filter(Boolean);
         if (picks.length === 0) return null;
-        // 唯一的即时结算：资金收入（品牌活动等）。属性/风险/粉圈一律不在此加，交给剧情与熟练度。
-        let moneyDelta = 0;
-        picks.forEach(a => { if (a.money) moneyDelta += a.money; });
+        // 【V22 日程直接结算】日程与主线彻底分离：不再"锁定后靠剧情逐段演出来"，
+        //   而是当场把每个活动的效果算掉，不调 AI、不耗心力。沿用既有平衡：
+        //   技能→熟练度（练满 6 次 +1 同名属性）｜资金活动→现金｜休息→心力｜营业→人气。
+        let moneyDelta = 0, mentalDelta = 0, popDelta = 0;
+        const attrInc = {};                          // vocal/dance/rap/时尚度 +1
+        const profNext = { ...(proficiency || {}) };
+        const trainDayNext = { ...(lastTrainDay || {}) };
+        const notes = [];
+        picks.forEach(a => {
+            if (a.track) {
+                const cur = (profNext[a.track] ?? 0) + 1;
+                if (cur >= PROF_PER_LEVEL) { profNext[a.track] = 0; attrInc[a.track] = (attrInc[a.track] || 0) + 1; notes.push(`${PROF_TRACK_CN[a.track]}+1`); }
+                else { profNext[a.track] = cur; notes.push(`${PROF_TRACK_CN[a.track]}熟练${cur}/${PROF_PER_LEVEL}`); }
+                trainDayNext[a.track] = day;
+            } else if (a.money) { moneyDelta += a.money; notes.push(`资金+${a.money}万`); }
+            else if (a.id === "m_sleep" || a.id === "e_rest") { mentalDelta += 10; notes.push("心力+10"); }
+            else if (a.id === "e_live" || a.id === "e_sns") { popDelta += 2; notes.push("人气+2"); }
+        });
         if (moneyDelta) updateMoney(moneyDelta);
-        // 锁定当天日程 + 重置时段光标到「上午」，让今天从第一段剧情演起
+        if (mentalDelta) setMentalEnergy(prev => Math.min(MENTAL_MAX, prev + mentalDelta));
+        setProficiency(profNext);
+        setLastTrainDay(trainDayNext);
+        if (Object.keys(attrInc).length || popDelta) {
+            setAttrs(prev => {
+                const next = { ...prev };
+                Object.entries(attrInc).forEach(([k, v]) => { next[k] = Math.min(100, (next[k] ?? 0) + v); });
+                if (popDelta) next.人气值 = Math.min(100, (next.人气值 ?? 0) + popDelta);
+                return next;
+            });
+        }
         setDailyPlan(cleanPlan);
-        setScheduleMap(prev => ({ ...prev, [day]: { ...cleanPlan, confirmed: true, ...(reused ? { reused: true } : {}) } }));
-        setSlotsDone(0);
-        addWorldState(`${reused ? "沿用上次安排，" : ""}锁定了今天的日程：${picks.map(a => a.name).join("、")}`);
+        setScheduleMap(prev => ({ ...prev, [day]: { ...cleanPlan, confirmed: true, settled: true, ...(reused ? { reused: true } : {}) } }));
+        // 每个日程活动算「一件事」
+        setTodayActions(n => (n | 0) + picks.length);
+        addWorldState(`${reused ? "沿用上次安排，" : ""}处理了今天的日程：${picks.map(a => a.name).join("、")}`);
         vibrate(VIBE.unlock); playSFX('unlock');
-        return { picks, moneyDelta };
+        return { picks, moneyDelta, notes };
     };
 
     const confirmDailyPlan = () => {
@@ -2040,9 +2111,9 @@ function GameApp({ slotId, initialData, onBack }) {
             setTimeout(() => setToastMsg(""), 2500);
             return;
         }
-        setToastMsg(`📅 今日日程已锁定：${locked.picks.map(a => a.emoji + a.name).join(" · ")}。剧情将围绕它展开${locked.moneyDelta ? `（资金+${locked.moneyDelta}万）` : ""}`);
-        setTimeout(() => setToastMsg(""), 3500);
-        setActiveModal(null); // 关掉日历，回到剧情开始今天
+        setToastMsg(`✅ 今日日程已结算：${locked.picks.map(a => a.emoji + a.name).join(" · ")}${locked.notes?.length ? `（${locked.notes.join("、")}）` : ""}`);
+        setTimeout(() => setToastMsg(""), 3800);
+        setActiveModal(null); // 关掉日历
     };
 
     // 【一键沿用 · V21】把最近一次锁定过的日程原样抄给今天并立即锁定。
@@ -2072,8 +2143,8 @@ function GameApp({ slotId, initialData, onBack }) {
             setTimeout(() => setToastMsg(""), 2500);
             return false;
         }
-        setToastMsg(`⚡ 已沿用上次日程：${locked.picks.map(a => a.emoji + a.name).join(" · ")}${locked.moneyDelta ? `（资金+${locked.moneyDelta}万）` : ""}`);
-        setTimeout(() => setToastMsg(""), 3000);
+        setToastMsg(`⚡ 已沿用并结算上次日程：${locked.picks.map(a => a.emoji + a.name).join(" · ")}${locked.notes?.length ? `（${locked.notes.join("、")}）` : ""}`);
+        setTimeout(() => setToastMsg(""), 3200);
         return true;
     };
     
@@ -2131,12 +2202,11 @@ function GameApp({ slotId, initialData, onBack }) {
             console.warn('[continueStory] 重入被拦截：上一个剧情请求还在进行');
             return;
         }
-        // 【日程闸门 · V20】今天还没锁定日程 → 不生成剧情，跳转日程界面让玩家先安排。
-        // 剧情是从日程里长出来的，没有日程就没有剧情骨架。
-        if (!scheduleMap[day]) {
+        // 【心力闸门 · V22】主线已与日程解耦：主线不再需要先排日程，但受"心力"约束。
+        // 心力见底 → 今天不能再推主线，只能休息/日程/刷手机，逼出"一天推几步"的节奏。
+        if (mentalEnergy < MENTAL_MIN_TO_ACT) {
             continueStoryLockRef.current = false;
-            setActiveModal("calendar");
-            setToastMsg("📅 先安排今天的日程，剧情会围绕它展开（可一键沿用上次安排）~");
+            setToastMsg("😴 你今天太累了，先休息吧。明天心力会恢复。");
             setTimeout(() => setToastMsg(""), 3000);
             return;
         }
@@ -2171,9 +2241,11 @@ function GameApp({ slotId, initialData, onBack }) {
                 已私联: unlocked.includes(f.id)
             };
         });
-        // 本回合的时段（0=上午 1=下午 2=晚上），以及给后端做熟练度归类的中文日程名
-        const slot = slotKeyFromDone(slotsDone);
-        const todayScheduleNames = planToScheduleNames(scheduleMap[day] || dailyPlan);
+        // 【主线解耦 · V22】主线不再挂靠"上午/下午/晚上"日程时段：
+        //   · slot 只给后端一个中性值（保持签名兼容），不再代表某个日程时段；
+        //   · todaySchedule 传空 → 主线剧情不归类任何熟练度赛道（训练只从"点日程"结算，不从主线来）；
+        //   · decoupled:true → 后端跳过"必须先排日程"闸门，并改用纯主线叙事框架。
+        const slot = neutralSlotFromActions(todayActions);
         const storyData = {
             context: {
                 character: char,
@@ -2183,14 +2255,14 @@ function GameApp({ slotId, initialData, onBack }) {
                 teammates: teammates?.map(t => t.name) || [],
                 previousStory: currentStory,
                 storySummary,
-                // ── V20 时段/熟练度/私联上下文 ──
-                slot, slotsDone,
-                todaySchedule: todayScheduleNames,           // 中文活动名，后端据此归类熟练度赛道
+                // ── V22 主线解耦：中性时段 + 空日程（主线不产生训练熟练度）──
+                slot,
+                todaySchedule: {},                           // 主线不带日程 → 后端不归类熟练度
+                decoupled: true,                             // 主线与日程分离标记
                 proficiency, lastTrainDay,                   // 熟练度进度 + 最后训练日（停练衰减用）
                 // ⚠️ 从未私联时不要传 lastUnlockDay（传 0 会被后端当成「第0天私联过」，误触发 7 天冷却）
                 lastUnlockDay: lastUnlockDay > 0 ? lastUnlockDay : undefined,
                 interactionCount,                            // 与各大粉实质交集次数（私联门槛之一）
-                tomorrowScheduled: !!scheduleMap[day + 1],   // 明天是否已排（晚上时段判 needSchedule 用）
                 worldStateSummary, coupleExposure,
                 // ── V21 主线节拍器：怠速拍数 / 本拍是否强制推主线 / 实质交集名单 ──
                 // 后端用途：mainlinePush=true 时在 system prompt 追加主线推进指令；
@@ -2198,7 +2270,8 @@ function GameApp({ slotId, initialData, onBack }) {
                 mainlineIdle, mainlinePush, contactFans
             },
             slot,                                            // 顶层也带一份，非流式路径直接可读
-            attended: true,                                  // 玩家执行了本时段安排的事
+            decoupled: true,                                 // 顶层也带一份（后端两处都读）
+            attended: true,
             playerAction,
             // 海后值已删除；风险/黑粉/粉圈热度均为百分制
             worldState: { currentRisk, suspicion, popularity: attrs.人气值, fandomHeat, antiCount, companyFavor },
@@ -2409,53 +2482,21 @@ function GameApp({ slotId, initialData, onBack }) {
             riskTurnAccumRef.current = 0;
 
             // ══════════════════════════════════════════════════════════════
-            // 【时段推进 vs 一天结束】后端 dayEnded 为准；缺失则按「晚上=一天结束」兜底。
-            //   · 上午/下午：只把时段光标 +1，天数不变，不做日结/衰减/摘要。
-            //   · 晚上：一天真正结束 → 天数 +1、弹每日总结、风险/疑虑衰减、时段归零。
+            // 【主线一拍完成 · V22】主线已与"日程/时段"解耦，不再自动结束一天。
+            //   这里只做三件事：① 扣心力（每个主线选项 -15）；② 今日行动数 +1；
+            //   ③ 到软上限时提醒可以休息。天数推进交给玩家点【结束今天】(endDay)。
+            //   后端仍会返回 dayEnded/slot，但解耦模式下前端不再据此自动翻天。
             // ══════════════════════════════════════════════════════════════
-            const dayEnded = (typeof result.dayEnded === "boolean") ? result.dayEnded : (slot === "evening");
-            if (!dayEnded) {
-                // 半天推进：进入下一个时段
-                setSlotsDone(n => Math.min(2, n + 1));
-            } else {
-                // 一天结束：先做长期摘要压缩（每 5 天）
-                if ((day + 1) % 5 === 0) {
-                    callEdgeFunction('summarize_story', { history: newHistory.slice(-5) }).then(res => {
-                        if (res.summary) setStorySummary(res.summary);
-                    });
-                }
-                // 【每日总结】优先用后端 daySummary，否则本地兜底
-                {
-                    const endedDay = day;
-                    const sched = scheduleMap[endedDay] || dailyPlan;
-                    const schedText = SCHEDULE_SLOTS.map(s => {
-                        const a = findScheduleActivity(sched?.[s.key]);
-                        return a ? `${s.label}·${a.name}` : `${s.label}·自由`;
-                    }).join("  ");
-                    setDailySummary({
-                        day: endedDay,
-                        text: result.daySummary || `第 ${endedDay} 天结束。今日日程：${schedText}。`,
-                        risk: currentRisk,
-                        fandom: fandomHeat
-                    });
-                }
-                setDay(prev => prev + 1);
-                setSlotsDone(0); // 新的一天从上午开始
-                // 【自然衰减】风险每天 -5（危机 ≥80 时不衰减，正在发酵）；疑虑每天 -8
-                setCurrentRisk(prev => prev >= 80 ? prev : Math.max(0, prev - 5));
-                setSuspicion(prev => Math.max(0, prev - 8));
-                // 一天结束才重置社交缓存/动态
-                setSocialCache({});
-                setSocialFeeds(prev => {
-                    const next = {};
-                    Object.keys(prev).forEach(k => {
-                        const mine = (prev[k] || []).filter(p => p.mine);
-                        if (mine.length) next[k] = mine;
-                    });
-                    return next;
-                });
-                // 【延迟触发涟漪】剧情渲染后 1.5s 再触发，不阻塞主流程（风险为百分制）
-                const eventSummary = (worldActionsSummary || playerAction || "").slice(0, 80); // 用纯玩家行动摘要，不带 V21 叙事指令
+            setMentalEnergy(prev => Math.max(0, prev - MENTAL_COST_MAINLINE));
+            const actedCountML = (todayActions | 0) + 1;
+            setTodayActions(actedCountML);
+            if (actedCountML === MAX_ACTIONS_PER_DAY) {
+                setToastMsg(`今天做了不少事（${actedCountML} 件），要休息吗？可点下方「结束今天」。`);
+                setTimeout(() => setToastMsg(""), 4000);
+            }
+            // 【舆论涟漪】高风险或每 3 拍随机，让粉圈对刚发生的事有反应（延迟触发不阻塞主流程）
+            {
+                const eventSummary = (worldActionsSummary || playerAction || "").slice(0, 80);
                 if (currentRisk >= 60 || (newHistory.length % 3 === 0 && Math.random() < 0.35)) {
                     setTimeout(() => triggerSocialDynamic(eventSummary), 1500);
                 }
@@ -2468,6 +2509,64 @@ function GameApp({ slotId, initialData, onBack }) {
         continueStoryLockRef.current = false;
     };
     
+    // ══════════════════════════════════════════════════════════════
+    // 【结束今天 · V22】玩家主动结束一天（取代"日程走完自动翻天"）。
+    //   做的正是旧 dayEnded 分支的日结工作 + 心力恢复 + 行动数清零。
+    // ══════════════════════════════════════════════════════════════
+    const endDayLockRef = React.useRef(false);
+    const endDay = () => {
+        if (loading) { setToastMsg("剧情还在生成，稍等一下再结束今天~"); setTimeout(() => setToastMsg(""), 2500); return; }
+        if (endDayLockRef.current) return;
+        endDayLockRef.current = true;
+        setTimeout(() => { endDayLockRef.current = false; }, 800);
+        const endedDay = day;
+        // 长期摘要压缩（每 5 天）
+        if ((endedDay + 1) % 5 === 0) {
+            callEdgeFunction('summarize_story', { history: history.slice(-5) }).then(res => {
+                if (res.summary) setStorySummary(res.summary);
+            });
+        }
+        // 【每日总结】有今日日程就把它列进去，没有就写"今天以主线为主"
+        {
+            const sched = scheduleMap[endedDay];
+            const schedText = sched
+                ? SCHEDULE_SLOTS.map(s => {
+                    const a = findScheduleActivity(sched?.[s.key]);
+                    return a ? `${s.label}·${a.name}` : null;
+                }).filter(Boolean).join("  ")
+                : "";
+            setDailySummary({
+                day: endedDay,
+                text: schedText
+                    ? `第 ${endedDay} 天结束。今日安排：${schedText}。`
+                    : `第 ${endedDay} 天结束。今天以主线剧情为主。`,
+                risk: currentRisk,
+                fandom: fandomHeat
+            });
+        }
+        setDay(prev => prev + 1);
+        // 【每日恢复】心力 +50（上限 100）；今日行动数清零
+        setMentalEnergy(prev => Math.min(MENTAL_MAX, prev + MENTAL_RECOVER_PER_DAY));
+        setTodayActions(0);
+        // 【自然衰减】风险每天 -5（危机 ≥80 时不衰减，正在发酵）；疑虑每天 -8
+        setCurrentRisk(prev => prev >= 80 ? prev : Math.max(0, prev - 5));
+        setSuspicion(prev => Math.max(0, prev - 8));
+        // 一天结束才重置社交缓存/动态（保留玩家自己发的帖）
+        setSocialCache({});
+        setSocialFeeds(prev => {
+            const next = {};
+            Object.keys(prev).forEach(k => {
+                const mine = (prev[k] || []).filter(p => p.mine);
+                if (mine.length) next[k] = mine;
+            });
+            return next;
+        });
+        setTimeout(() => checkEndings(), 400);
+        vibrate(VIBE.softTap);
+        setToastMsg(`🌙 第 ${endedDay} 天结束，心力恢复到 ${Math.min(MENTAL_MAX, mentalEnergy + MENTAL_RECOVER_PER_DAY)}。新的一天开始了~`);
+        setTimeout(() => setToastMsg(""), 3500);
+    };
+
     const handleChoice = (choice) => continueStory(choice);
     const handleCustom = () => {
         if (customText.trim()) {
@@ -2554,8 +2653,8 @@ function GameApp({ slotId, initialData, onBack }) {
         setHearts(prev => { const n = {}; Object.keys(prev).forEach(k => n[k] = 30); return n; });
         setFanEmotions(initFanEmotions());
         setEncounterUsed({});
-        // 【V20】新周目：时段/熟练度/私联进度/日程全部归零，从第 1 天上午、未排日程开始
-        setSlotsDone(0);
+        // 【V20/V22】新周目：熟练度/私联/日程 + 心力/行动数全部归零，从第 1 天满心力开始
+        setMentalEnergy(MENTAL_MAX); setTodayActions(0);
         setProficiency(emptyProficiency());
         setLastTrainDay({}); setLastUnlockDay(0); setInteractionCount({});
         setScheduleMap({}); setDailyPlan({ morning: null, noon: null, evening: null });
@@ -3197,7 +3296,7 @@ const sendDM = async (fan, text, actionItem) => {
                 ))}
             </div>
             <div className="sidebar-section">
-                <h4>📋 今日日程{scheduleMap[day] ? "（已锁定）" : "（未安排）"}</h4>
+                <h4>📋 今日日程{scheduleMap[day] ? "（已结算）" : "（未安排）"}</h4>
                 {SCHEDULE_SLOTS.map(s => {
                     const a = findScheduleActivity((scheduleMap[day] || dailyPlan)[s.key]);
                     return <div key={s.key} className="sidebar-item"><span>{s.emoji} {s.label}</span><span>{a ? a.name : "—"}</span></div>;
@@ -3301,40 +3400,30 @@ const sendDM = async (fan, text, actionItem) => {
 
         // 剧情页
         if (activeTab === "story") {
-            const todayPlanned = !!scheduleMap[day];
-            const reusableRec = !todayPlanned ? findReusablePlan() : null; // 【V21】有历史日程可沿用时，展示一键开演入口
+            const todayScheduled = !!scheduleMap[day];
+            const restNeeded = mentalEnergy < MENTAL_MIN_TO_ACT;   // 心力见底 → 今天推不动主线
             return (
                 <>
-                    {!todayPlanned && (
-                        <div style={{ background: "linear-gradient(135deg,#fce7f3,#f3e8ff)", border: "1px solid #d946a8", borderRadius: 16, margin: "0 16px 12px", padding: "12px 14px" }}>
-                            <div style={{ color: "#a21caf", fontSize: 13, fontWeight: 700, marginBottom: 4 }}>📅 第 {day} 天还没安排日程</div>
-                            <div style={{ color: "#7a3d8f", fontSize: 11, lineHeight: 1.6, marginBottom: 8 }}>
-                                剧情会围绕你的安排展开。先安排好上午/下午/晚上要做的事，今天才会开始。
-                            </div>
-                            <button className="btn-primary" style={{ width: "100%" }} onClick={() => setActiveModal("calendar")}>去安排今日日程 →</button>
-                            {reusableRec && (
-                                <button className="btn-secondary" style={{ width: "100%", marginTop: 8 }} onClick={reuseLastPlan}>
-                                    ⚡ 沿用上次日程（{summarizeScheduleEntry(reusableRec)}），直接开演
-                                </button>
-                            )}
-                        </div>
-                    )}
-                    {todayPlanned && (
-                        <div style={{ margin: "0 16px 10px", fontSize: 11, color: "#9d6db8", display: "flex", alignItems: "center", gap: 6 }}>
-                            <span>🕑 现在是</span>
-                            <b style={{ color: "#d946a8" }}>{slotLabelFromDone(slotsDone)}</b>
-                            <span>·</span>
-                            {SCHEDULE_SLOTS.map((s, i) => {
-                                const a = findScheduleActivity((scheduleMap[day] || dailyPlan)[s.key]);
-                                const done = i < slotsDone, cur = i === slotsDone;
-                                return <span key={s.key} style={{ opacity: done ? 0.4 : 1, fontWeight: cur ? 700 : 400, color: cur ? "#a21caf" : "#9d6db8" }}>
-                                    {s.label[0]}·{a ? a.name : "自由"}{i < 2 ? " " : ""}
-                                </span>;
-                            })}
+                    {/* 今日进度：心力 + 已做几件事（取代旧的「必须先排日程」闸门与时段光标）*/}
+                    <div style={{ margin: "0 16px 10px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 11, color: "#9d6db8" }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontWeight: 700, color: restNeeded ? "#ef4444" : mentalEnergy < MENTAL_WARN ? "#f59e0b" : "#ec4899" }}>
+                            ❤️ 心力 {mentalEnergy}/{MENTAL_MAX}
+                        </span>
+                        <span>·</span>
+                        <span>🕑 {dayPhaseFromActions(todayActions)}</span>
+                        <span>·</span>
+                        <span>今天做了 <b style={{ color: "#a21caf" }}>{todayActions}</b> 件事</span>
+                        <button onClick={() => setActiveModal("calendar")} style={{ marginLeft: "auto", background: "none", border: "1px solid rgba(217,70,168,0.35)", color: "#d946a8", fontSize: 10, borderRadius: 10, padding: "2px 8px", cursor: "pointer" }}>
+                            {todayScheduled ? "📅 今日已安排" : "📅 安排日程"}
+                        </button>
+                    </div>
+                    {restNeeded && (
+                        <div style={{ margin: "0 16px 10px", fontSize: 11, color: "#ef4444", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 12, padding: "6px 10px", lineHeight: 1.6 }}>
+                            😴 心力不足（&lt;{MENTAL_MIN_TO_ACT}），今天推不动主线了。可以去「安排日程」或休息，或点下方「结束今天」——明天心力会恢复。
                         </div>
                     )}
                     {/* 【主线节拍器 · V21】怠速到阈值 → 明示玩家：下一拍主线要动了 */}
-                    {todayPlanned && !loading && mainlineIdle >= MAINLINE_PUSH_AFTER && (
+                    {!loading && !restNeeded && mainlineIdle >= MAINLINE_PUSH_AFTER && (
                         <div style={{ margin: "0 16px 10px", fontSize: 11, color: "#a21caf", background: "rgba(168,85,247,0.10)", border: "1px solid rgba(168,85,247,0.25)", borderRadius: 12, padding: "6px 10px" }}>
                             🎬 主线蓄势中 —— 日常已连续 {mainlineIdle} 拍，下一段剧情将迎来主线进展
                         </div>
@@ -3438,28 +3527,26 @@ const sendDM = async (fan, text, actionItem) => {
                     <div className="choices-container">
                         {loading ? (
                             <div className="loading-spinner"><div className="spinner"></div><div>AI 正在思考...</div></div>
-                        ) : !todayPlanned ? (
-                            <>
-                                <button className="choice-btn" onClick={() => setActiveModal("calendar")} style={{ border: "1px dashed #d946a8", textAlign: "center", fontWeight: 600 }}>
-                                    📅 先安排今日日程，再继续剧情
-                                </button>
-                                {reusableRec && (
-                                    <button className="choice-btn" onClick={reuseLastPlan} style={{ textAlign: "center" }}>
-                                        ⚡ 一键沿用上次日程，直接开演
-                                    </button>
-                                )}
-                            </>
                         ) : (
                             <>
+                                {/* 主线选项：每选一次 -15 心力；心力见底则变灰不可选 */}
                                 {currentChoices.map((choice, idx) => (
-                                    <button key={idx} className="choice-btn" onClick={() => handleChoice(choice)}>
+                                    <button key={idx} className="choice-btn" onClick={() => handleChoice(choice)} disabled={restNeeded}
+                                        style={restNeeded ? { opacity: 0.45, cursor: "not-allowed" } : undefined}>
                                         <span className="choice-label">{String.fromCharCode(65 + idx)}</span>
-                                        <span>{choice}</span>
+                                        <span style={{ flex: 1 }}>{choice}</span>
+                                        <span style={{ fontSize: 10, color: restNeeded ? "#ef4444" : "#c084fc", whiteSpace: "nowrap", marginLeft: 6 }}>−{MENTAL_COST_MAINLINE}心力</span>
                                     </button>
                                 ))}
+                                {restNeeded && (
+                                    <div style={{ fontSize: 11, color: "#ef4444", textAlign: "center", padding: "4px 0" }}>
+                                        心力不足，主线选项暂不可选。去点日程/休息，或「结束今天」让心力恢复。
+                                    </div>
+                                )}
                                 {!customMode ? (
-                                    <button className="choice-btn" onClick={() => setCustomMode(true)} style={{ border: "1px dashed #d946a8", textAlign: "center" }}>
-                                        ✏️ 自定义行动
+                                    <button className="choice-btn" onClick={() => setCustomMode(true)} disabled={restNeeded}
+                                        style={{ border: "1px dashed #d946a8", textAlign: "center", ...(restNeeded ? { opacity: 0.45, cursor: "not-allowed" } : {}) }}>
+                                        ✏️ 自定义行动（主线 −{MENTAL_COST_MAINLINE}心力）
                                     </button>
                                 ) : (
                                     <div>
@@ -3470,6 +3557,21 @@ const sendDM = async (fan, text, actionItem) => {
                                         </div>
                                     </div>
                                 )}
+                                {/* 【一天的控制 · V22】玩家自己决定继续还是结束今天 */}
+                                <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(217,70,168,0.15)" }}>
+                                    <div style={{ fontSize: 11, color: "#9d6db8", textAlign: "center", marginBottom: 8 }}>
+                                        今天做了 <b style={{ color: "#a21caf" }}>{todayActions}</b> 件事
+                                        {todayActions >= MAX_ACTIONS_PER_DAY && <span style={{ color: "#f59e0b" }}> · 做了不少了，要不要休息？</span>}
+                                    </div>
+                                    <div style={{ display: "flex", gap: 10 }}>
+                                        <button className="btn-secondary" style={{ flex: 1 }} onClick={() => storyTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+                                            继续今天
+                                        </button>
+                                        <button className={todayActions >= MAX_ACTIONS_PER_DAY ? "btn-primary" : "btn-secondary"} style={{ flex: 1 }} onClick={endDay}>
+                                            🌙 结束今天
+                                        </button>
+                                    </div>
+                                </div>
                             </>
                         )}
                     </div>
@@ -3619,7 +3721,7 @@ const sendDM = async (fan, text, actionItem) => {
                         ))}
                     </div>
                     <div className="sidebar-section">
-                        <h4>📋 今日日程{scheduleMap[day] ? "（已锁定）" : "（未安排）"}</h4>
+                        <h4>📋 今日日程{scheduleMap[day] ? "（已结算）" : "（未安排）"}</h4>
                         {SCHEDULE_SLOTS.map(s => {
                             const a = findScheduleActivity((scheduleMap[day] || dailyPlan)[s.key]);
                             return <div key={s.key} className="sidebar-item"><span>{s.emoji} {s.label}</span><span>{a ? a.name : "—"}</span></div>;
@@ -4518,8 +4620,8 @@ const sendDM = async (fan, text, actionItem) => {
                         <div className="modal-header"><h3>📅 今日日程 · 第 {day} 天</h3><button className="modal-close" onClick={() => setActiveModal(null)}>×</button></div>
                         <div style={{ padding: "4px 16px 0", color: "#9d6db8", fontSize: 12, textAlign: "center", lineHeight: 1.6 }}>
                             {lockedToday
-                                ? "🔒 今日日程已锁定，剧情正围绕它逐时段展开"
-                                : "安排上午 / 下午 / 晚上要做的事。日程不直接加属性——同类训练累计 6 次（≈连续 6 天）才兑换 +1；剧情会围绕你的安排展开。"}
+                                ? "✅ 今日日程已结算（属性已到账，不消耗心力）"
+                                : "安排上午 / 下午 / 晚上要做的事。点「结算」当场生效、不调剧情、不耗心力：训练累计 6 次兑换 +1 属性，营业 +人气，休息 +心力。"}
                         </div>
 
                         {/* 熟练度进度：让玩家看到离「兑换 +1」还差几次 */}
@@ -4578,11 +4680,11 @@ const sendDM = async (fan, text, actionItem) => {
                         <div style={{ padding: "0 16px 12px" }}>
                             {lockedToday ? (
                                 <div style={{ textAlign: "center", padding: "10px", borderRadius: 12, background: "rgba(74,222,128,0.12)", color: "#16a34a", fontSize: 13 }}>
-                                    🔒 今日日程已锁定：{summarizeScheduleEntry(todayRecord)}
+                                    ✅ 今日日程已结算：{summarizeScheduleEntry(todayRecord)}
                                 </div>
                             ) : (
                                 <>
-                                    <button className="btn-primary" style={{ width: "100%" }} onClick={confirmDailyPlan}>🔒 锁定今日日程 · 开始今天</button>
+                                    <button className="btn-primary" style={{ width: "100%" }} onClick={confirmDailyPlan}>✅ 结算今日日程（直接生效 · 不耗心力）</button>
                                     {reusableRec && (
                                         <button className="btn-secondary" style={{ width: "100%", marginTop: 8 }}
                                             onClick={() => { if (reuseLastPlan()) setActiveModal(null); }}>
@@ -5046,9 +5148,12 @@ const sendDM = async (fan, text, actionItem) => {
                     </div>
                 </div>
             )}
-            {/* 顶部状态栏：按需求「顶部仅保留时间变化」——显示天数 + 当前时段（上午/下午/晚上）+ 星期 */}
+            {/* 顶部状态栏：天数 + 行动时间感 + 星期 + 心力（❤️ x/100，<20 黄，<10 红）*/}
             <div className="status-bar">
-                <span className="time">DAY {day} · {slotLabelFromDone(slotsDone)} · {gameClock(day)}</span>
+                <span className="time">DAY {day} · {dayPhaseFromActions(todayActions)} · {gameClock(day)}</span>
+                <span className="time" style={{ marginLeft: 10, fontWeight: 700, color: mentalEnergy < MENTAL_MIN_TO_ACT ? "#ef4444" : mentalEnergy < MENTAL_WARN ? "#f59e0b" : "#ec4899" }}>
+                    ❤️ {mentalEnergy}/{MENTAL_MAX}
+                </span>
             </div>
             
             {/* 主头部：仅保留当前进行中的活动名（DAY 已上移到顶部时间） */}
@@ -5503,9 +5608,10 @@ function CreateCharacter({ slotId, onComplete, onBack }) {
                             fanEmotions: initFanEmotions(),
                             altAccounts: { twitter: false, tiktok: false, weibo: false, instagram: false },
                             encounterUsed: {}, endingsUnlocked: [], achievementsUnlocked: [], cycleCount: 0,
-                            // V20 时段/熟练度/私联：全新开局
-                            slotsDone: 0, proficiency: { vocal: 0, dance: 0, rap: 0, "时尚度": 0 },
+                            // V20 熟练度/私联 + V22 心力/行动数：全新开局
+                            proficiency: { vocal: 0, dance: 0, rap: 0, "时尚度": 0 },
                             lastTrainDay: {}, lastUnlockDay: 0, interactionCount: {}, schemaV20: true,
+                            mentalEnergy: MENTAL_MAX, todayActions: 0, schemaV22: true,
                             activeEvents: [], currentSchedule: generateRandomSchedule(1),
                             scheduleMap: {}, dailyPlan: { morning: null, noon: null, evening: null },
                             dmReadStatus: {}, dmHistories: {}, dmMemory: {}, coupleExposure: null, socialFeeds: {},
